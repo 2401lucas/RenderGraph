@@ -1,0 +1,16 @@
+//
+// Created by 2401Lucas on 2025-10-30.
+//
+
+#ifndef GPU_PARTICLE_SIM_WINAPP_H
+#define GPU_PARTICLE_SIM_WINAPP_H
+
+
+class WinApp {
+    public:
+    WinApp();
+    ~WinApp();
+};
+
+
+#endif //GPU_PARTICLE_SIM_WINAPP_H
