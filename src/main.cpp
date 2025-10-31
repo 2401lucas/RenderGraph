@@ -1,13 +1,18 @@
-#include "OS/Window/Window.h"
-#include "Rendering/Samples/HelloTriangle.h"
+#include "Engine/Core/Engine.h"
+#include "Engine/OS/Window/Window.h"
+#include "Applications/ParticleApp.h"
 
 int main() {
     Window::InitGLFW();
-
-    //TODO: Console Argument parsing for paramaters
     {
-        HelloTriangle app = HelloTriangle(1920, 1080);
-        app.Start();
+        auto app = std::make_unique<ParticleApp>();
+
+        //TODO: Console Argument parsing for paramaters
+        Engine engine;
+
+        engine.Initialize(std::move(app), 1280, 720);
+
+        engine.Run();
     }
 
     Window::TerminateGLFW();

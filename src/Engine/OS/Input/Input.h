@@ -207,7 +207,7 @@ class InputManager {
   ~InputManager();
 
   // Must be called once per frame (after Window::PollAllEvents())
-  void update();
+  void Update();
 
   // Process queued events and fire callbacks (only needed in Queued mode)
   void processEvents();

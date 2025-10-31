@@ -103,7 +103,7 @@ InputManager::~InputManager() {
   }
 }
 
-void InputManager::update() {
+void InputManager::Update() {
   if (!m_Window) return;
 
   std::lock_guard<std::mutex> lock(m_Mutex);

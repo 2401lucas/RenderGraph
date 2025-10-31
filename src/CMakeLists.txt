@@ -9,11 +9,11 @@ file(GLOB_RECURSE SOURCE_FILES
 )
 
 
-add_executable(GPU_Particle_Sim  ${SOURCE_FILES})
+add_executable(GPU_Particle_Sim  ${SOURCE_FILES}
+)
 
 # Add include directories (for internal headers)
-target_include_directories(GPU_Particle_Sim PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/OS")
-target_include_directories(GPU_Particle_Sim PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/Rendering")
+target_include_directories(GPU_Particle_Sim PRIVATE "Engine/")
 
 # Link DX12 libraries
 target_link_libraries(GPU_Particle_Sim PRIVATE d3d12)
@@ -25,4 +25,4 @@ target_link_libraries(GPU_Particle_Sim PRIVATE Microsoft::DirectX-Headers)
 target_link_libraries(GPU_Particle_Sim PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(GPU_Particle_Sim PUBLIC glfw)
 
-target_compile_definitions(GPU_Particle_Sim PUBLIC _DEBUG)
+target_compile_definitions(GPU_Particle_Sim PUBLIC DEBUG_EVENTS)

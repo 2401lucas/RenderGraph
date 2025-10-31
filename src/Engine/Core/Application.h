@@ -4,12 +4,12 @@
 
 #ifndef GPU_PARTICLE_SIM_APPLICATION_H
 #define GPU_PARTICLE_SIM_APPLICATION_H
+#include "EventSystem.h"
+#include "Engine.h"
+
 class Engine;
 class Renderer;
-class InputSystem;
-class AudioSystem;
-class PhysicsSystem;
-class EventSystem;
+class InputManager;
 
 /// <summary>
 /// Base application interface that all applications must inherit from.
@@ -35,7 +35,7 @@ public:
     /// </summary>
     /// <param name="engine">Reference to the engine</param>
     /// <param name="deltaTime">Time elapsed since last frame in seconds</param>
-    virtual void OnUpdate(Engine &engine, float deltaTime) = 0;
+    virtual void Update(Engine &engine, float deltaTime) = 0;
 
     /// <summary>
     /// Called every frame for rendering.
@@ -57,15 +57,13 @@ public:
     /// Called when the window is resized.
     /// Override to handle resolution changes, update camera aspect ratio, etc.
     /// </summary>
-    virtual void OnResize(Engine &engine, int width, int height) {
-    }
+    virtual void OnResize(Engine &engine, int width, int height) = 0;
 
     /// <summary>
     /// Called when the application loses/gains focus.
     /// Override to pause/resume gameplay, mute audio, etc.
     /// </summary>
-    virtual void OnFocusChanged(Engine &engine, bool hasFocus) {
-    }
+    virtual void OnFocusChanged(Engine &engine, bool hasFocus) = 0;
 
     // ===== Configuration Methods =====
 
@@ -73,16 +71,6 @@ public:
     /// Returns the window title to display.
     /// </summary>
     virtual const char *GetWindowTitle() const { return "Application"; }
-
-    /// <summary>
-    /// Returns the initial window width.
-    /// </summary>
-    virtual int GetWindowWidth() const { return 1280; }
-
-    /// <summary>
-    /// Returns the initial window height.
-    /// </summary>
-    virtual int GetWindowHeight() const { return 720; }
 
     /// <summary>
     /// Returns whether the window should start in fullscreen mode.
@@ -93,19 +81,5 @@ public:
     /// Returns whether VSync should be enabled.
     /// </summary>
     virtual bool GetVSyncEnabled() const { return true; }
-
-protected:
-    // Helper methods for derived classes to access subsystems easily
-    // These avoid having to call engine.GetRenderer() repeatedly
-
-    inline Renderer &GetRenderer(Engine &engine);
-
-    inline InputSystem &GetInput(Engine &engine);
-
-    inline AudioSystem &GetAudio(Engine &engine);
-
-    inline PhysicsSystem &GetPhysics(Engine &engine);
-
-    inline EventSystem &GetEvents(Engine &engine);
 };
 #endif //GPU_PARTICLE_SIM_APPLICATION_H
