@@ -6,14 +6,17 @@
 #define GPU_PARTICLE_SIM_PARTICLEAPP_H
 
 
-#include "../Engine/Core/Application.h"
-#include "../Engine/Core/EventSystem.h"
+#include "Core/Application.h"
+#include "Core/EventSystem.h"
+#include "Core/Camera.h"
+#include "Core/Transform.h"
+
 #include <memory>
 #include <vector>
 
+
 // Forward declarations
 class ParticleSystem;
-class Camera;
 
 class ParticleApp : public Application {
 public:
@@ -48,6 +51,14 @@ private:
     bool m_isPaused = false;
     bool m_showDebugInfo = false;
     float m_timeScale = 1.0f;
+
+    struct Entity {
+        MeshHandle meshHandle;
+        MaterialHandle materialHandle;
+        Transform transform;
+    } entity;
+
+    std::unique_ptr<Camera> m_camera;
 };
 
 

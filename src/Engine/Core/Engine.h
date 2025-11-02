@@ -10,6 +10,7 @@
 #include "../Rendering/Renderer.h"
 #include "../OS/Input/Input.h"
 #include "../OS/Window/Window.h"
+#include "../Resources/ResourceManager.h"
 
 class Application;
 
@@ -29,6 +30,7 @@ public:
     Renderer &GetRenderer() { return *m_renderer; }
     InputManager &GetInput() { return *m_input; }
     EventSystem &GetEvents() { return *m_event; }
+    ResourceManager &GetResourceManager() { return *m_resources; }
 
     float GetDeltaTime() const { return m_deltaTime; }
     float GetTotalTime() const { return m_totalTime; }
@@ -39,7 +41,9 @@ private:
     std::unique_ptr<Application> m_application;
 
     std::unique_ptr<Window> m_window;
+    std::unique_ptr<Device> m_device;
     std::unique_ptr<Renderer> m_renderer;
+    std::unique_ptr<ResourceManager> m_resources;
     std::unique_ptr<InputManager> m_input;
     std::unique_ptr<EventSystem> m_event;
 

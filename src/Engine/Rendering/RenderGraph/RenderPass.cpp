@@ -3,3 +3,177 @@
 //
 
 #include "RenderPass.h"
+#include <algorithm>
+#include <stdexcept>
+
+// ===== RenderPassContext Implementation =====
+
+Texture *RenderPassContext::GetTexture(const std::string &name) const {
+    // Search in input textures
+    for (auto *texture: inputTextures) {
+        // Note: Would need name stored in Texture class
+        // For now, return first texture as placeholder
+        return texture;
+    }
+
+    // Search in output textures
+    for (auto *texture: outputTextures) {
+        return texture;
+    }
+
+    return nullptr;
+}
+
+Buffer *RenderPassContext::GetBuffer(const std::string &name) const {
+    // Similar implementation as GetTexture
+    for (auto *buffer: inputBuffers) {
+        return buffer;
+    }
+
+    for (auto *buffer: outputBuffers) {
+        return buffer;
+    }
+
+    return nullptr;
+}
+
+// ===== RenderPass Implementation =====
+
+RenderPass::RenderPass(const std::string &name)
+    : m_name(name)
+      , m_enabled(true) {
+}
+
+RenderPass::~RenderPass() {
+}
+
+void RenderPass::AddInput(const RenderPassResource &desc) {
+    m_inputs.push_back(desc);
+}
+
+void RenderPass::AddOutput(const RenderPassResource &desc) {
+    m_outputs.push_back(desc);
+}
+
+void RenderPass::AddReadWrite(const RenderPassResource &desc) {
+    // Add to both inputs and outputs
+    m_inputs.push_back(desc);
+    m_outputs.push_back(desc);
+}
+
+void RenderPass::Execute(RenderPassContext &context) {
+    if (!m_enabled) {
+        return;
+    }
+
+    if (!m_executeFunc) {
+        throw std::runtime_error("RenderPass '" + m_name + "' has no execute function");
+    }
+
+    m_executeFunc(context);
+}
+
+// ===== RenderPassBuilder Implementation =====
+
+RenderPassBuilder::RenderPassBuilder(const std::string &name)
+    : m_pass(std::make_unique<RenderPass>(name)) {
+}
+
+RenderPassBuilder &RenderPassBuilder::ReadTexture(const std::string &name,
+                                                  ResourceState state,
+                                                  PipelineStage stage) {
+    RenderPassResource resource{
+        .name = name,
+        .type = RenderPassResource::Type::Texture,
+        .access = RenderPassResource::Access::Read,
+        .state = state,
+        .stage = stage,
+    };
+
+    m_pass->AddInput(resource);
+    return *this;
+}
+
+RenderPassBuilder &RenderPassBuilder::WriteTexture(const std::string &name,
+                                                   uint32_t width, uint32_t height,
+                                                   RenderPassResource::Format format,
+                                                   ResourceState state,
+                                                   PipelineStage stage) {
+    RenderPassResource resource{
+        .name = name,
+        .type = RenderPassResource::Type::Texture,
+        .access = RenderPassResource::Access::Write,
+        .state = state,
+        .stage = stage,
+        .width = width,
+        .height = height,
+        .format = format,
+    };
+
+    m_pass->AddOutput(resource);
+    return *this;
+}
+
+RenderPassBuilder &RenderPassBuilder::ReadWriteTexture(const std::string &name, uint32_t width, uint32_t height,
+                                                       RenderPassResource::Format format, ResourceState state,
+                                                       PipelineStage stage) {
+    RenderPassResource resource{
+        .name = name,
+        .type = RenderPassResource::Type::Texture,
+        .access = RenderPassResource::Access::ReadWrite,
+        .state = state,
+        .stage = stage,
+        .width = width,
+        .height = height,
+        .format = format,
+    };
+
+    m_pass->AddReadWrite(resource);
+    return *this;
+}
+
+RenderPassBuilder &RenderPassBuilder::ReadBuffer(const std::string &name, ResourceState state,
+                                                 PipelineStage stage) {
+    RenderPassResource resource{
+        .name = name,
+        .type = RenderPassResource::Type::Buffer,
+        .access = RenderPassResource::Access::Read,
+        .state = state,
+        .stage = stage,
+    };
+
+    m_pass->AddInput(resource);
+    return *this;
+}
+
+RenderPassBuilder &RenderPassBuilder::WriteBuffer(const std::string &name, uint64_t size, ResourceState state,
+                                                  PipelineStage stage) {
+    RenderPassResource resource{
+        .name = name,
+        .type = RenderPassResource::Type::Buffer,
+        .access = RenderPassResource::Access::Write,
+        .state = state,
+        .stage = stage,
+        .size = size,
+    };
+
+    m_pass->AddOutput(resource);
+    return *this;
+}
+
+RenderPassBuilder &RenderPassBuilder::Execute(RenderPassExecuteFunc func) {
+    m_pass->SetExecuteFunc(func);
+    return *this;
+}
+
+RenderPassBuilder &RenderPassBuilder::Enable(bool enabled) {
+    m_pass->SetEnabled(enabled);
+    return *this;
+}
+
+std::unique_ptr<RenderPass> RenderPassBuilder::Build() {
+    if (!m_pass->IsValid()) {
+        throw std::runtime_error("RenderPass must have an execute function");
+    }
+    return std::move(m_pass);
+}

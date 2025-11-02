@@ -162,8 +162,6 @@ namespace Events {
     constexpr const char* FRAME_BEGIN = "frame_begin";
     constexpr const char* FRAME_END = "frame_end";
     constexpr const char* EFFECT_SPAWN = "effect_spawn";
-    constexpr const char* PARTICLE_SYSTEM_CREATED = "particle_system_created";
-    constexpr const char* PARTICLE_SYSTEM_DESTROYED = "particle_system_destroyed";
 
     // Input
     constexpr const char* KEY_PRESSED = "key_pressed";
@@ -171,7 +169,7 @@ namespace Events {
     constexpr const char* MOUSE_MOVED = "mouse_moved";
     constexpr const char* MOUSE_CLICKED = "mouse_clicked";
 
-    // Gameplay (examples - define your own)
+    // Gameplay
     constexpr const char* ENTITY_SPAWNED = "entity_spawned";
     constexpr const char* ENTITY_DESTROYED = "entity_destroyed";
     constexpr const char* COLLISION_OCCURRED = "collision_occurred";
