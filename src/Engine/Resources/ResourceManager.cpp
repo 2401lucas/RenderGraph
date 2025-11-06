@@ -6,7 +6,9 @@
 
 #include "TextureLoader.h"
 
-ResourceManager::ResourceManager(Device *device) : m_device(device), m_gpuMemorySize(0), m_gpuMemoryUsed(0) {
+ResourceManager::ResourceManager(Device *device, EventSystem *eventSystem) : m_device(device),
+                                                                             m_eventSystem(eventSystem),
+                                                                             m_gpuMemoryUsed(0) {
     m_gpuMemorySize = device->GetVideoMemoryBudget();
 
     TextureData textureData = TextureLoader::CreateCheckerboard(512, 512);
@@ -17,6 +19,7 @@ ResourceManager::ResourceManager(Device *device) : m_device(device), m_gpuMemory
         .mipLevels = textureData.mipLevels,
         .arraySize = 1,
         .format = textureData.format,
+        .usage = TextureUsage::ShaderResource
     };
     std::unique_ptr<Texture> texture(device->CreateTexture(textureCI));
     device->UploadTextureData(texture.get(), textureData.data.data(),
@@ -84,6 +87,7 @@ TextureHandle ResourceManager::LoadTexture(const std::string &path) {
             .mipLevels = textureData.mipLevels,
             .arraySize = 1,
             .format = textureData.format,
+            .usage = TextureUsage::ShaderResource
         };
         std::unique_ptr<Texture> texture(m_device->CreateTexture(textureCI));
         m_device->UploadTextureData(texture.get(), textureData.data.data(),
@@ -108,28 +112,33 @@ MaterialHandle ResourceManager::LoadMaterial(const std::string &path) {
         return existingHandle;
     }
 
-    return MaterialHandle{};
+    std::unique_ptr<Material> material = std::make_unique<Material>();
+    // TODO: Material System
+    // material->SetShader("UberShader.shader");
+    material->SetAlbedoTexture(LoadTexture(path));
+    MaterialHandle handle = m_materialPool.Add(path, std::move(material));
+    return handle;
 }
 
-ShaderHandle ResourceManager::LoadShader(const std::string &path) {
-    ShaderHandle existingHandle = m_shaderPool.FindByPath(path);
+PipelineHandle ResourceManager::LoadPipeline(const PipelineCreateInfo &info) {
+    PipelineHandle existingHandle = m_pipelinePool.FindByPath(info.debugName);
 
     if (existingHandle.IsValid()) {
-        m_shaderPool.AddRef(existingHandle);
+        m_pipelinePool.AddRef(existingHandle);
         return existingHandle;
     }
 
     try {
-        std::unique_ptr<Shader> shader(m_device->CreateShader(path));
-        ShaderHandle handle = m_shaderPool.Add(path, std::move(shader));
+        std::unique_ptr<Pipeline> shader(m_device->CreatePipeline(info));
+        PipelineHandle handle = m_pipelinePool.Add(info.debugName, std::move(shader));
         return handle;
     } catch (const std::exception &e) {
-        printf("Failed to load shader: ");
-        printf(path.c_str());
+        printf("Failed to load Pipeline: ");
+        printf(info.debugName);
         printf(" - ");
         printf(e.what());
         printf("\n");
-        return ShaderHandle{};
+        return PipelineHandle{};
     }
 }
 
@@ -145,8 +154,8 @@ void ResourceManager::UnloadMaterial(MaterialHandle handle) {
     m_materialPool.Remove(handle);
 }
 
-void ResourceManager::UnloadShader(ShaderHandle handle) {
-    m_shaderPool.Remove(handle);
+void ResourceManager::UnloadPipeline(PipelineHandle handle) {
+    m_pipelinePool.Remove(handle);
 }
 
 void ResourceManager::UnloadAllTextures() {
@@ -169,11 +178,11 @@ Material *ResourceManager::GetMaterial(MaterialHandle handle) {
     return m_materialPool.Get(handle);
 }
 
-Shader *ResourceManager::GetShader(ShaderHandle handle) {
-    return m_shaderPool.Get(handle);
+Pipeline *ResourceManager::GetPipeline(PipelineHandle handle) {
+    return m_pipelinePool.Get(handle);
 }
 
-void ResourceManager::ReloadShader(ShaderHandle handle) {
+void ResourceManager::ReloadPipeline(PipelineHandle handle) {
 }
 
 void ResourceManager::ReloadTexture(TextureHandle handle) {

@@ -31,7 +31,8 @@ struct RenderPassResource {
         ReadWrite
     } access;
 
-    ResourceState state = ResourceState::Common;
+    // ResourceState state = ResourceState::Common;
+    uint32_t stateFlag = 0;
 
     PipelineStage stage = PipelineStage::PixelShader;
 
@@ -153,25 +154,25 @@ public:
     RenderPassBuilder(const std::string &name);
 
     RenderPassBuilder &ReadTexture(const std::string &name,
-                                   ResourceState state = ResourceState::ShaderResource,
+                                   TextureUsage state = TextureUsage::ShaderResource,
                                    PipelineStage stage = PipelineStage::PixelShader);
 
     RenderPassBuilder &WriteTexture(const std::string &name,
                                     uint32_t width, uint32_t height,
                                     RenderPassResource::Format format,
-                                    ResourceState state = ResourceState::RenderTarget,
+                                    TextureUsage state = TextureUsage::RenderTarget,
                                     PipelineStage stage = PipelineStage::RenderTarget);
 
     RenderPassBuilder &ReadWriteTexture(const std::string &name, uint32_t width, uint32_t height,
                                         RenderPassResource::Format format,
-                                        ResourceState state = ResourceState::UnorderedAccess,
+                                        TextureUsage state = TextureUsage::UnorderedAccess,
                                         PipelineStage stage = PipelineStage::ComputeShader);
 
-    RenderPassBuilder &ReadBuffer(const std::string &name, ResourceState state = ResourceState::UnorderedAccess,
+    RenderPassBuilder &ReadBuffer(const std::string &name, BufferUsage state = BufferUsage::UnorderedAccess,
                                   PipelineStage stage = PipelineStage::ComputeShader);
 
     RenderPassBuilder &WriteBuffer(const std::string &name, uint64_t size,
-                                   ResourceState state = ResourceState::UnorderedAccess,
+                                   BufferUsage state = BufferUsage::UnorderedAccess,
                                    PipelineStage stage = PipelineStage::ComputeShader);
 
     RenderPassBuilder &Execute(RenderPassExecuteFunc func);

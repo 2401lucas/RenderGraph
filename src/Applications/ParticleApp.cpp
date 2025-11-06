@@ -10,10 +10,14 @@ void ParticleApp::OnInitialize(Engine &engine) {
 
     auto &resources = engine.GetResourceManager();
     entity.meshHandle = resources.LoadMesh("assets/cube.obj");
-    entity.transform = Transform::Translation(0, 0, 0);
+    entity.materialHandle = resources.LoadMaterial("assets/cube_BaseColor.png");
+    entity.transform.SetPosition({0, 0, 0});
 
     auto &renderer = engine.GetRenderer();
-    m_camera = std::make_unique<Camera>(Transform::Translation(0, 0, 5), (1280.f / 720.f), 60, 0.0001f, 500.0f);
+    m_camera = std::make_unique<Camera>(Transform({0, 0, 5}, {0, 0, 0}, {1, 1, 1}), (1280.f / 720.f), 60, 0.0001f,
+                                        500.0f);
+
+    renderer.SetCamera(*m_camera);
 }
 
 void ParticleApp::Update(Engine &engine, float deltaTime) {
@@ -28,15 +32,14 @@ void ParticleApp::OnRender(Engine &engine) {
     auto &resources = engine.GetResourceManager();
 
     renderer.BeginFrame();
-    renderer.SetCamera(*m_camera);
 
-    RenderInfo info{
-        .mesh = resources.GetMesh(entity.meshHandle),
-        .material = resources.GetMaterial(entity.materialHandle), // TODO: CREATE MATERIAL
-        .transform = entity.transform,
-        .castsShadows = true
-    };
-    renderer.Submit(info);
+    // RenderInfo info{
+    //     .mesh = resources.GetMesh(entity.meshHandle),
+    //     .material = resources.GetMaterial(entity.materialHandle), // TODO: CREATE MATERIAL
+    //     .transform = entity.transform,
+    //     .castsShadows = true
+    // };
+    // renderer.Submit(info);
 
     renderer.EndFrame();
 }

@@ -20,6 +20,7 @@ struct MaterialProperties {
 class Material {
 public:
     Material();
+
     ~Material();
 
     // Textures
@@ -34,19 +35,20 @@ public:
     TextureHandle GetEmissiveTexture() const { return m_emissiveTexture; }
 
     // Properties
-    MaterialProperties& GetProperties() { return m_properties; }
-    const MaterialProperties& GetProperties() const { return m_properties; }
+    MaterialProperties &GetProperties() { return m_properties; }
+    const MaterialProperties &GetProperties() const { return m_properties; }
 
+    // TODO: GET SHADER/PIPELINE INFO
     // Shader
-    void SetShader(ShaderHandle shader) { m_shader = shader; }
-    ShaderHandle GetShader() const { return m_shader; }
+    // void SetShader(ShaderHandle shader) { m_shader = shader; }
+    // ShaderHandle GetShader() const { return m_shader; }
 
 private:
     TextureHandle m_albedoTexture;
     TextureHandle m_normalTexture;
     TextureHandle m_metallicRoughnessTexture;
     TextureHandle m_emissiveTexture;
-    ShaderHandle m_shader;
+    // ShaderHandle m_shader;
     MaterialProperties m_properties;
 };
 

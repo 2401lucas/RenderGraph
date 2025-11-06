@@ -6,25 +6,34 @@
 #define GPU_PARTICLE_SIM_COMMANDQUEUE_H
 #include "CommandList.h"
 
+
+enum class QueueType {
+    Graphics, // Can do graphics, compute, and copy
+    Compute, // Can do compute and copy
+    Transfer // Can only do copy operations
+};
+
+struct CommandQueueCreateInfo {
+    QueueType type = QueueType::Graphics;
+    const char *debugName = nullptr;
+};
+
 class CommandQueue {
 public:
     virtual ~CommandQueue() = default;
 
-    // Execute command lists
-    virtual void Execute(CommandList **commandLists, uint32_t count) = 0;
-
-    // Synchronization
-    virtual void Signal(uint64_t signalValue) = 0;
-
-    virtual void WaitForFence(uint64_t fenceValue) = 0;
-
-    virtual uint64_t GetCompletedFenceValue() const = 0;
+    virtual void Execute(CommandList *commandList) = 0;
 
     virtual void WaitIdle() = 0;
 
-    // Convenience
-    void Execute(CommandList *commandList) {
-        Execute(&commandList, 1);
-    }
+    virtual void Signal(uint64_t fenceValue) = 0;
+
+    virtual void WaitForFence(uint64_t fenceValue) = 0;
+
+    virtual void BeginFrame(uint32_t frameIndex) = 0;
+
+    virtual QueueType GetType() const = 0;
+
+    virtual void AssignCommandList(CommandList *, uint32_t) = 0;
 };
 #endif //GPU_PARTICLE_SIM_COMMANDQUEUE_H

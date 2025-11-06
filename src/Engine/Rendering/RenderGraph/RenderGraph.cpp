@@ -10,22 +10,34 @@
 #include <queue>
 #include <chrono>
 
-RenderGraph::RenderGraph(Device *device)
-    : m_device(device) {
-    // Create command list for graph execution
-    m_commandList = m_device->CreateCommandList();
-}
+RenderGraph::RenderGraph(Device *device, CommandQueue *commandQueue, uint32_t frameCount)
+    : m_device(device), m_commandQueue(commandQueue), m_frameCount(frameCount) {
+    if (!m_commandQueue) {
+        throw std::runtime_error("RenderGraph: CommandQueue cannot be null");
+    }
 
-RenderGraph::~RenderGraph() {
-    Clear();
+    QueueType queueType = m_commandQueue->GetType();
 
-    // Cleanup command list
-    if (m_commandList) {
-        // m_device->DestroyCommandList(m_commandList);
-        m_commandList = nullptr;
+    m_commandLists.resize(frameCount);
+    for (uint32_t i = 0; i < frameCount; ++i) {
+        // Create command list for this queue type
+        m_commandLists[i] = std::unique_ptr<CommandList>(m_device->CreateCommandList(queueType));
+
+        // Assign the allocator from the queue to this command list
+        m_commandQueue->AssignCommandList(m_commandLists[i].get(), i);
+    }
+
+    // Initialize per-frame resource tracking
+    m_frameResources.resize(frameCount);
+    for (uint32_t i = 0; i < frameCount; ++i) {
+        m_frameResources[i].frameIndex = i;
     }
 }
 
+RenderGraph::~RenderGraph() {
+    Flush(); // Ensure GPU is done with all resources
+    Clear();
+}
 
 // ===== Pass Management =====
 
@@ -38,31 +50,20 @@ void RenderGraph::AddPass(std::unique_ptr<RenderPass> pass) {
 }
 
 void RenderGraph::Clear() {
-    // Clear passes
     m_passes.clear();
     m_compiledPasses.clear();
     m_dependencies.clear();
-
-    // Clean up transient resources
-    for (auto &[name, resource]: m_transientResources) {
-        if (resource.texture) {
-            m_device->DestroyTexture(resource.texture);
-        }
-        if (resource.buffer) {
-            m_device->DestroyBuffer(resource.buffer);
-        }
-    }
-    m_transientResources.clear();
-
-    // Clear external resource references (don't delete, we don't own them)
-    m_externalTextures.clear();
-    m_externalBuffers.clear();
 }
 
 // ===== Execution =====
 
-void RenderGraph::Execute() {
+CommandList *RenderGraph::Execute() {
     auto startTime = std::chrono::high_resolution_clock::now();
+
+    CommandList *commandList = m_commandLists[m_currentFrameIndex].get();
+    commandList->Begin();
+
+    m_statistics.barrierCount = 0;
 
     // 1. Build dependency graph
     BuildDependencyGraph();
@@ -70,7 +71,7 @@ void RenderGraph::Execute() {
     // 2. Sort passes topologically
     TopologicalSort();
 
-    // 3. Allocate transient resources
+    // 3. Allocate transient resources for this frame
     AllocateResources();
 
     // 4. Calculate resource lifetimes
@@ -85,7 +86,6 @@ void RenderGraph::Execute() {
     m_statistics.compileTime = std::chrono::duration<float, std::milli>(
         compileTime - startTime).count();
 
-    // Log graph for debugging
 #if defined(_DEBUG)
     LogRenderGraph();
 #endif
@@ -105,32 +105,57 @@ void RenderGraph::Execute() {
 
         // Execute the pass
         ExecutePass(compiledPass);
-
-        // Release resources no longer needed
-        ReleaseDeadResources(static_cast<uint32_t>(i));
     }
 
-    // Automatically transition presentTarget to be ready to present
+    // Transition present target if specified
     if (!m_presentTarget.empty()) {
-        auto it = m_externalTextures.find(m_presentTarget);
-        if (it != m_externalTextures.end()) {
-            Texture *presentTexture = it->second;
-
-            // Transition to Present state
-            m_commandList->TransitionTexture(
-                presentTexture,
-                ResourceState::RenderTarget, // Assume coming from RT
-                ResourceState::Present
-            );
+        auto it = m_externalResources.find(m_presentTarget);
+        if (it != m_externalResources.end() && it->second.type == ExternalResource::Type::Texture) {
+            TransitionExternalResource(m_presentTarget, (uint32_t) TextureUsage::Present);
         }
     }
+
+    commandList->End();
 
     auto executeTime = std::chrono::high_resolution_clock::now();
     m_statistics.executeTime = std::chrono::duration<float, std::milli>(
         executeTime - compileTime).count();
 
-    // Update statistics
     UpdateStatistics();
+
+    return commandList;
+}
+
+void RenderGraph::NextFrame() {
+    m_currentFrameIndex = (m_currentFrameIndex + 1) % m_frameCount;
+
+    auto &currentFrame = m_frameResources[m_currentFrameIndex];
+    for (auto &[name, resource]: currentFrame.resources) {
+        resource.canBeDestroyed = true;
+    }
+
+    // Clean up resources from frames that are definitely finished
+    // (i.e., resources that haven't been used in m_frameCount frames)
+    CleanupOldResources();
+}
+
+void RenderGraph::Flush() {
+    m_device->WaitIdle();
+
+    // Now safe to destroy all transient resources
+    for (auto &frameRes: m_frameResources) {
+        for (auto &[name, resource]: frameRes.resources) {
+            if (resource.texture) {
+                m_device->DestroyTexture(resource.texture);
+                resource.texture = nullptr;
+            }
+            if (resource.buffer) {
+                m_device->DestroyBuffer(resource.buffer);
+                resource.buffer = nullptr;
+            }
+        }
+        frameRes.resources.clear();
+    }
 }
 
 // ===== Compilation: Dependency Analysis =====
@@ -223,37 +248,58 @@ void RenderGraph::TopologicalSort() {
     }
 }
 
-void RenderGraph::DetectCycles() {
-    // Already handled by TopologicalSort
-    // If sort produces fewer passes than input, there's a cycle
-}
-
 // ===== Resource Management =====
 
+void RenderGraph::CleanupOldResources() {
+    // Resources can be destroyed if they haven't been used in m_frameCount frames
+    for (auto &frameRes: m_frameResources) {
+        std::vector<std::string> toRemove;
+
+        for (auto &[name, resource]: frameRes.resources) {
+            uint32_t framesSinceUse = m_currentFrameIndex >= resource.lastUsedFrame
+                                          ? m_currentFrameIndex - resource.lastUsedFrame
+                                          : (m_frameCount - resource.lastUsedFrame) + m_currentFrameIndex;
+
+            if (framesSinceUse >= m_frameCount && resource.canBeDestroyed) {
+                if (resource.texture) {
+                    m_device->DestroyTexture(resource.texture);
+                    resource.texture = nullptr;
+                }
+                if (resource.buffer) {
+                    m_device->DestroyBuffer(resource.buffer);
+                    resource.buffer = nullptr;
+                }
+                toRemove.push_back(name);
+            }
+        }
+
+        for (const auto &name: toRemove) {
+            frameRes.resources.erase(name);
+        }
+    }
+}
+
+
 void RenderGraph::AllocateResources() {
+    auto &currentFrame = m_frameResources[m_currentFrameIndex];
+
     for (auto &compiled: m_compiledPasses) {
         RenderPass *pass = compiled.pass;
 
         // Allocate output resources
         for (const auto &output: pass->GetOutputs()) {
             if (IsExternalResource(output.name)) {
-                continue; // External resources are not managed by graph
-            }
-
-            auto *resource = GetOrCreateResource(output.name, output);
-            compiled.outputResources.push_back(resource);
-        }
-
-        // Reference input resources
-        for (const auto &input: pass->GetInputs()) {
-            if (IsExternalResource(input.name)) {
+                compiled.outputResourceNames.push_back(output.name);
                 continue;
             }
 
-            auto it = m_transientResources.find(input.name);
-            if (it != m_transientResources.end()) {
-                compiled.inputResources.push_back(&it->second);
-            }
+            GetOrCreateResource(output.name, output);
+            compiled.outputResourceNames.push_back(output.name);
+        }
+
+        // Track input resources
+        for (const auto &input: pass->GetInputs()) {
+            compiled.inputResourceNames.push_back(input.name);
         }
     }
 }
@@ -265,6 +311,7 @@ Texture *RenderGraph::CreateTransientTexture(const RenderPassResource &desc) {
         .depth = 1,
         .mipLevels = 1,
         .arraySize = 1,
+        .usage = (TextureUsage) desc.stateFlag
     };
 
     // Map format
@@ -299,7 +346,7 @@ Buffer *RenderGraph::CreateTransientBuffer(const RenderPassResource &desc) {
 
 void RenderGraph::CalculateResourceLifetimes() {
     // Reset lifetimes
-    for (auto &[name, resource]: m_transientResources) {
+    for (auto &[name, resource]: m_frameResources[m_currentFrameIndex].resources) {
         resource.firstUse = UINT32_MAX;
         resource.lastUse = 0;
     }
@@ -310,8 +357,8 @@ void RenderGraph::CalculateResourceLifetimes() {
 
         // Check inputs
         for (const auto &input: compiled.pass->GetInputs()) {
-            auto it = m_transientResources.find(input.name);
-            if (it != m_transientResources.end()) {
+            auto it = m_frameResources[m_currentFrameIndex].resources.find(input.name);
+            if (it != m_frameResources[m_currentFrameIndex].resources.end()) {
                 it->second.firstUse = std::min(it->second.firstUse, passIndex);
                 it->second.lastUse = std::max(it->second.lastUse, passIndex);
             }
@@ -319,28 +366,11 @@ void RenderGraph::CalculateResourceLifetimes() {
 
         // Check outputs
         for (const auto &output: compiled.pass->GetOutputs()) {
-            auto it = m_transientResources.find(output.name);
-            if (it != m_transientResources.end()) {
+            auto it = m_frameResources[m_currentFrameIndex].resources.find(output.name);
+            if (it != m_frameResources[m_currentFrameIndex].resources.end()) {
                 it->second.firstUse = std::min(it->second.firstUse, passIndex);
                 it->second.lastUse = std::max(it->second.lastUse, passIndex);
             }
-        }
-    }
-}
-
-void RenderGraph::ReleaseDeadResources(uint32_t currentPassIndex) {
-    for (auto &[name, resource]: m_transientResources) {
-        if (resource.isAlive && resource.lastUse == currentPassIndex) {
-            // Resource is no longer needed, free it
-            if (resource.texture) {
-                m_device->DestroyTexture(resource.texture);
-                resource.texture = nullptr;
-            }
-            if (resource.buffer) {
-                m_device->DestroyBuffer(resource.buffer);
-                resource.buffer = nullptr;
-            }
-            resource.isAlive = false;
         }
     }
 }
@@ -349,95 +379,135 @@ void RenderGraph::AliasResources() {
     // Find resources with non-overlapping lifetimes that could share memory
     // This is a simplified version - real implementation would be more sophisticated
 
-    std::vector<TransientResource *> textures;
-    for (auto &[name, resource]: m_transientResources) {
-        if (resource.type == TransientResource::Type::Texture) {
-            textures.push_back(&resource);
-        }
-    }
-
-    // Sort by first use
-    std::sort(textures.begin(), textures.end(),
-              [](const TransientResource *a, const TransientResource *b) {
-                  return a->firstUse < b->firstUse;
-              });
-
-    // Try to alias resources
-    for (size_t i = 0; i < textures.size(); i++) {
-        for (size_t j = i + 1; j < textures.size(); j++) {
-            // Check if lifetimes don't overlap
-            if (textures[i]->lastUse < textures[j]->firstUse) {
-                // TODO  alias these resources
-            }
-        }
-    }
+    // std::vector<TransientResource *> textures;
+    // for (auto &[name, resource]: m_transientResources) {
+    //     if (resource.type == TransientResource::Type::Texture) {
+    //         textures.push_back(&resource);
+    //     }
+    // }
+    //
+    // // Sort by first use
+    // std::sort(textures.begin(), textures.end(),
+    //           [](const TransientResource *a, const TransientResource *b) {
+    //               return a->firstUse < b->firstUse;
+    //           });
+    //
+    // // Try to alias resources
+    // for (size_t i = 0; i < textures.size(); i++) {
+    //     for (size_t j = i + 1; j < textures.size(); j++) {
+    //         // Check if lifetimes don't overlap
+    //         if (textures[i]->lastUse < textures[j]->firstUse) {
+    //             // TODO  alias these resources
+    //         }
+    //     }
+    // }
 }
 
 // ===== Barrier Insertion =====
 // TODO: Barriers for Buffers?
 void RenderGraph::InsertBarriers(uint32_t passIndex) {
+    CommandList *commandList = m_commandLists[m_currentFrameIndex].get();
     const auto &compiled = m_compiledPasses[passIndex];
+
+    // Handle inputs
     for (const auto &input: compiled.pass->GetInputs()) {
-        auto it = m_transientResources.find(input.name);
-        if (it == m_transientResources.end()) {
-            // External resource or doesn't exist
+        // Check if it's an external resource
+        auto extIt = m_externalResources.find(input.name);
+        if (extIt != m_externalResources.end()) {
+            TransitionExternalResource(input.name, input.stateFlag);
             continue;
         }
 
-        TransientResource &resource = it->second;
-        // Check if state transition is needed
-        ResourceState currentState = resource.currentState;
-        ResourceState requiredState = input.state;
-
-        if (currentState != requiredState) {
-            // Insert barrier
-            if (resource.type == TransientResource::Type::Texture) {
-                m_commandList->TransitionTexture(
-                    resource.texture,
-                    currentState,
-                    requiredState
-                );
-
-                // Update tracked state
-                resource.currentState = requiredState;
-
-                m_statistics.barrierCount++;
-            }
-        }
-    }
-
-    // Similar for outputs
-    for (const auto &output: compiled.pass->GetOutputs()) {
-        auto it = m_transientResources.find(output.name);
-        if (it == m_transientResources.end()) {
-            // External resource or doesn't exist
+        // Check transient resources
+        TransientResource *resource = GetCurrentFrameResource(input.name);
+        if (!resource) {
             continue;
         }
 
-        TransientResource &resource = it->second;
-        ResourceState currentState = resource.currentState;
-        ResourceState requiredState = output.state;
-
-        if (currentState != requiredState) {
-            if (resource.type == TransientResource::Type::Texture) {
-                m_commandList->TransitionTexture(
-                    resource.texture,
-                    currentState,
-                    requiredState
+        if (resource->currentStateFlag != input.stateFlag) {
+            if (resource->type == TransientResource::Type::Texture) {
+                commandList->TransitionTexture(
+                    resource->texture,
+                    (TextureUsage) resource->currentStateFlag,
+                    (TextureUsage) input.stateFlag
                 );
             } else {
-                m_commandList->TransitionBuffer(
-                    resource.buffer,
-                    currentState,
-                    requiredState
+                commandList->TransitionBuffer(
+                    resource->buffer,
+                    (BufferUsage) resource->currentStateFlag,
+                    (BufferUsage) input.stateFlag
                 );
             }
-            // Update tracked state
-            resource.currentState = requiredState;
 
+            resource->currentStateFlag = input.stateFlag;
             m_statistics.barrierCount++;
         }
     }
+
+    // Handle outputs
+    for (const auto &output: compiled.pass->GetOutputs()) {
+        // Check external resources
+        auto extIt = m_externalResources.find(output.name);
+        if (extIt != m_externalResources.end()) {
+            TransitionExternalResource(output.name, output.stateFlag);
+            continue;
+        }
+
+        TransientResource *resource = GetCurrentFrameResource(output.name);
+        if (!resource) {
+            continue;
+        }
+
+        if (resource->currentStateFlag != output.stateFlag) {
+            if (resource->type == TransientResource::Type::Texture) {
+                commandList->TransitionTexture(
+                    resource->texture,
+                    (TextureUsage) resource->currentStateFlag,
+                    (TextureUsage) output.stateFlag
+                );
+            } else {
+                commandList->TransitionBuffer(
+                    resource->buffer,
+                    (BufferUsage) resource->currentStateFlag,
+                    (BufferUsage) output.stateFlag
+                );
+            }
+
+            resource->currentStateFlag = output.stateFlag;
+            m_statistics.barrierCount++;
+        }
+    }
+}
+
+void RenderGraph::TransitionExternalResource(const std::string &name, uint32_t newState) {
+    auto it = m_externalResources.find(name);
+    if (it == m_externalResources.end()) {
+        return;
+    }
+
+    auto &resource = it->second;
+    if (resource.currentStateFlag == newState) {
+        return;
+    }
+
+    CommandList *commandList = m_commandLists[m_currentFrameIndex].get();
+
+    if (resource.type == ExternalResource::Type::Texture) {
+        commandList->TransitionTexture(
+            resource.texture,
+            (TextureUsage) resource.currentStateFlag,
+            (TextureUsage) newState
+        );
+    } else {
+        commandList->TransitionBuffer(
+            resource.buffer,
+            (BufferUsage) resource.currentStateFlag,
+            (BufferUsage) newState
+        );
+    }
+
+    resource.currentStateFlag = newState;
+    m_statistics.barrierCount++;
 }
 
 // ===== Execution =====
@@ -452,37 +522,35 @@ void RenderGraph::ExecutePass(const CompiledPass &compiledPass) {
 
 RenderPassContext RenderGraph::BuildPassContext(const CompiledPass &compiledPass) {
     RenderPassContext context;
-    context.commandList = m_commandList;
-    context.frameIndex = 0; // Would get from frame manager
+    context.commandList = m_commandLists[m_currentFrameIndex].get();
+    context.frameIndex = m_currentFrameIndex;
     context.deltaTime = 0.016f; // Would get from timer
 
-    // Populate input textures
-    for (const auto &input: compiledPass.pass->GetInputs()) {
-        if (input.type == RenderPassResource::Type::Texture) {
-            Texture *texture = GetTexture(input.name);
-            if (texture) {
-                context.inputTextures.push_back(texture);
-            }
-        } else if (input.type == RenderPassResource::Type::Buffer) {
-            Buffer *buffer = GetBuffer(input.name);
-            if (buffer) {
-                context.inputBuffers.push_back(buffer);
-            }
+    // Populate input textures and buffers
+    for (const auto &inputName: compiledPass.inputResourceNames) {
+        // Try to find as texture first
+        Texture *tex = GetTexture(inputName);
+        if (tex) {
+            context.inputTextures.push_back(tex);
+        }
+
+        // Try to find as buffer
+        Buffer *buf = GetBuffer(inputName);
+        if (buf) {
+            context.inputBuffers.push_back(buf);
         }
     }
 
-    // Populate output textures
-    for (const auto &output: compiledPass.pass->GetOutputs()) {
-        if (output.type == RenderPassResource::Type::Texture) {
-            Texture *texture = GetTexture(output.name);
-            if (texture) {
-                context.outputTextures.push_back(texture);
-            }
-        } else if (output.type == RenderPassResource::Type::Buffer) {
-            Buffer *buffer = GetBuffer(output.name);
-            if (buffer) {
-                context.outputBuffers.push_back(buffer);
-            }
+    // Populate output textures and buffers
+    for (const auto &outputName: compiledPass.outputResourceNames) {
+        Texture *tex = GetTexture(outputName);
+        if (tex) {
+            context.outputTextures.push_back(tex);
+        }
+
+        Buffer *buf = GetBuffer(outputName);
+        if (buf) {
+            context.outputBuffers.push_back(buf);
         }
     }
 
@@ -491,71 +559,66 @@ RenderPassContext RenderGraph::BuildPassContext(const CompiledPass &compiledPass
 
 // ===== External Resources =====
 
-void RenderGraph::RegisterExternalTexture(const std::string &name, Texture *texture) {
-    m_externalTextures[name] = texture;
+void RenderGraph::RegisterExternalTexture(const std::string &name, Texture *texture,
+                                          TextureUsage initialState) {
+    ExternalResource resource;
+    resource.texture = texture;
+    resource.type = ExternalResource::Type::Texture;
+    resource.initialStateFlag = (uint32_t) initialState;
+    resource.currentStateFlag = (uint32_t) initialState;
+    resource.isPresentTarget = false;
+
+    m_externalResources[name] = resource;
 }
 
-void RenderGraph::RegisterExternalBuffer(const std::string &name, Buffer *buffer) {
-    m_externalBuffers[name] = buffer;
+void RenderGraph::RegisterExternalBuffer(const std::string &name, Buffer *buffer,
+                                         BufferUsage initialState) {
+    ExternalResource resource;
+    resource.buffer = buffer;
+    resource.type = ExternalResource::Type::Buffer;
+    resource.initialStateFlag = (uint32_t) initialState;
+    resource.currentStateFlag = (uint32_t) initialState;
+    resource.isPresentTarget = false;
+
+    m_externalResources[name] = resource;
 }
 
 void RenderGraph::SetPresentTarget(const std::string &name) {
     m_presentTarget = name;
+
+    auto it = m_externalResources.find(name);
+    if (it != m_externalResources.end()) {
+        it->second.isPresentTarget = true;
+    }
 }
 
-Texture *RenderGraph::GetTexture(const std::string &name) const {
-    // Check external textures first
-    auto extIt = m_externalTextures.find(name);
-    if (extIt != m_externalTextures.end()) {
-        return extIt->second;
-    }
-
-    // Check transient resources
-    auto it = m_transientResources.find(name);
-    if (it != m_transientResources.end()) {
-        return it->second.texture;
-    }
-
-    return nullptr;
-}
-
-Buffer *RenderGraph::GetBuffer(const std::string &name) const {
-    // Check external buffers first
-    auto extIt = m_externalBuffers.find(name);
-    if (extIt != m_externalBuffers.end()) {
-        return extIt->second;
-    }
-
-    // Check transient resources
-    auto it = m_transientResources.find(name);
-    if (it != m_transientResources.end()) {
-        return it->second.buffer;
-    }
-
-    return nullptr;
-}
 
 // ===== Helpers =====
 
 bool RenderGraph::IsExternalResource(const std::string &name) const {
-    return m_externalTextures.find(name) != m_externalTextures.end() ||
-           m_externalBuffers.find(name) != m_externalBuffers.end();
+    return m_externalResources.find(name) != m_externalResources.end();
 }
 
-TransientResource *RenderGraph::GetOrCreateResource(const std::string &name,
-                                                    const RenderPassResource &desc) {
-    auto it = m_transientResources.find(name);
-    if (it != m_transientResources.end()) {
+
+RenderGraph::TransientResource *RenderGraph::GetOrCreateResource(const std::string &name,
+                                                                 const RenderPassResource &desc) {
+    auto &currentFrame = m_frameResources[m_currentFrameIndex];
+    auto it = currentFrame.resources.find(name);
+
+    if (it != currentFrame.resources.end()) {
         return &it->second;
     }
 
-    // Create new transient resource
+    // Create new transient resource for this frame
     TransientResource resource;
     resource.name = name;
     resource.type = desc.type == RenderPassResource::Type::Texture
                         ? TransientResource::Type::Texture
                         : TransientResource::Type::Buffer;
-    resource.isAlive = true;
+    resource.lastUsedFrame = m_currentFrameIndex;
+    resource.canBeDestroyed = false; // Will be set true after frame is fully executed
+    resource.initialStateFlag = desc.stateFlag;
+    resource.currentStateFlag = desc.stateFlag;
 
     if (resource.type == TransientResource::Type::Texture) {
         resource.texture = CreateTransientTexture(desc);
@@ -566,17 +629,63 @@ TransientResource *RenderGraph::GetOrCreateResource(const std::string &name,
         resource.size = desc.size;
     }
 
-    m_transientResources[name] = resource;
-    return &m_transientResources[name];
+    currentFrame.resources[name] = resource;
+    return &currentFrame.resources[name];
+}
+
+RenderGraph::TransientResource *RenderGraph::GetCurrentFrameResource(const std::string &name) {
+    auto &currentFrame = m_frameResources[m_currentFrameIndex];
+    auto it = currentFrame.resources.find(name);
+
+    if (it != currentFrame.resources.end()) {
+        it->second.lastUsedFrame = m_currentFrameIndex;
+        return &it->second;
+    }
+
+    return nullptr;
+}
+
+Texture *RenderGraph::GetTexture(const std::string &name) {
+    // Check external first
+    auto extIt = m_externalResources.find(name);
+    if (extIt != m_externalResources.end() &&
+        extIt->second.type == ExternalResource::Type::Texture) {
+        return extIt->second.texture;
+    }
+
+    // Check current frame transients
+    TransientResource *resource = GetCurrentFrameResource(name);
+    if (resource && resource->type == TransientResource::Type::Texture) {
+        return resource->texture;
+    }
+
+    return nullptr;
+}
+
+Buffer *RenderGraph::GetBuffer(const std::string &name) {
+    // Check external first
+    auto extIt = m_externalResources.find(name);
+    if (extIt != m_externalResources.end() &&
+        extIt->second.type == ExternalResource::Type::Buffer) {
+        return extIt->second.buffer;
+    }
+
+    // Check current frame transients
+    TransientResource *resource = GetCurrentFrameResource(name);
+    if (resource && resource->type == TransientResource::Type::Buffer) {
+        return resource->buffer;
+    }
+
+    return nullptr;
 }
 
 void RenderGraph::UpdateStatistics() {
     m_statistics.passCount = static_cast<uint32_t>(m_compiledPasses.size());
-    m_statistics.transientResourceCount = static_cast<uint32_t>(m_transientResources.size());
+    m_statistics.transientResourceCount = static_cast<uint32_t>(m_frameResources[m_currentFrameIndex].resources.size());
 
     // Calculate memory usage
     uint64_t memoryUsed = 0;
-    for (const auto &[name, resource]: m_transientResources) {
+    for (const auto &[name, resource]: m_frameResources[m_currentFrameIndex].resources) {
         if (resource.type == TransientResource::Type::Texture) {
             // Estimate texture memory (simplified)
             memoryUsed += static_cast<uint64_t>(resource.width) * resource.height * 4;
@@ -617,7 +726,7 @@ void RenderGraph::LogRenderGraph() {
     }
 
     printf("\nResource Lifetimes:\n");
-    for (const auto &[name, resource]: m_transientResources) {
+    for (const auto &[name, resource]: m_frameResources[m_currentFrameIndex].resources) {
         sprintf_s(msg, "  %s: [%u, %u]\n",
                   name.c_str(), resource.firstUse, resource.lastUse);
         printf(msg);

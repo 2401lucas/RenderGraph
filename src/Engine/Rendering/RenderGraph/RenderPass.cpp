@@ -80,13 +80,13 @@ RenderPassBuilder::RenderPassBuilder(const std::string &name)
 }
 
 RenderPassBuilder &RenderPassBuilder::ReadTexture(const std::string &name,
-                                                  ResourceState state,
+                                                  TextureUsage state,
                                                   PipelineStage stage) {
     RenderPassResource resource{
         .name = name,
         .type = RenderPassResource::Type::Texture,
         .access = RenderPassResource::Access::Read,
-        .state = state,
+        .stateFlag = static_cast<uint32_t>(state),
         .stage = stage,
     };
 
@@ -97,13 +97,13 @@ RenderPassBuilder &RenderPassBuilder::ReadTexture(const std::string &name,
 RenderPassBuilder &RenderPassBuilder::WriteTexture(const std::string &name,
                                                    uint32_t width, uint32_t height,
                                                    RenderPassResource::Format format,
-                                                   ResourceState state,
+                                                   TextureUsage state,
                                                    PipelineStage stage) {
     RenderPassResource resource{
         .name = name,
         .type = RenderPassResource::Type::Texture,
         .access = RenderPassResource::Access::Write,
-        .state = state,
+        .stateFlag = static_cast<uint32_t>(state),
         .stage = stage,
         .width = width,
         .height = height,
@@ -115,13 +115,13 @@ RenderPassBuilder &RenderPassBuilder::WriteTexture(const std::string &name,
 }
 
 RenderPassBuilder &RenderPassBuilder::ReadWriteTexture(const std::string &name, uint32_t width, uint32_t height,
-                                                       RenderPassResource::Format format, ResourceState state,
+                                                       RenderPassResource::Format format, TextureUsage state,
                                                        PipelineStage stage) {
     RenderPassResource resource{
         .name = name,
         .type = RenderPassResource::Type::Texture,
         .access = RenderPassResource::Access::ReadWrite,
-        .state = state,
+        .stateFlag = static_cast<uint32_t>(state),
         .stage = stage,
         .width = width,
         .height = height,
@@ -132,13 +132,13 @@ RenderPassBuilder &RenderPassBuilder::ReadWriteTexture(const std::string &name, 
     return *this;
 }
 
-RenderPassBuilder &RenderPassBuilder::ReadBuffer(const std::string &name, ResourceState state,
+RenderPassBuilder &RenderPassBuilder::ReadBuffer(const std::string &name, BufferUsage state,
                                                  PipelineStage stage) {
     RenderPassResource resource{
         .name = name,
         .type = RenderPassResource::Type::Buffer,
         .access = RenderPassResource::Access::Read,
-        .state = state,
+        .stateFlag = static_cast<uint32_t>(state),
         .stage = stage,
     };
 
@@ -146,13 +146,13 @@ RenderPassBuilder &RenderPassBuilder::ReadBuffer(const std::string &name, Resour
     return *this;
 }
 
-RenderPassBuilder &RenderPassBuilder::WriteBuffer(const std::string &name, uint64_t size, ResourceState state,
+RenderPassBuilder &RenderPassBuilder::WriteBuffer(const std::string &name, uint64_t size, BufferUsage state,
                                                   PipelineStage stage) {
     RenderPassResource resource{
         .name = name,
         .type = RenderPassResource::Type::Buffer,
         .access = RenderPassResource::Access::Write,
-        .state = state,
+        .stateFlag = static_cast<uint32_t>(state),
         .stage = stage,
         .size = size,
     };

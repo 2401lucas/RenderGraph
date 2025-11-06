@@ -10,12 +10,13 @@
 #include <memory>
 #include <queue>
 #include <thread>
+#include <mutex>
 #include <unordered_map>
 
 #include "Material.h"
 #include "Mesh.h"
 #include "ResourceHandle.h"
-#include "Rendering/RHI/Shader.h"
+#include "Core/EventSystem.h"
 #include "Rendering/RHI/Texture.h"
 #include "Rendering/RHI/Device.h"
 
@@ -240,7 +241,7 @@ private:
 //TODO Asset Streaming
 class ResourceManager {
 public:
-    explicit ResourceManager(Device *device);
+    explicit ResourceManager(Device *device, EventSystem *eventSystem);
 
     ~ResourceManager();
 
@@ -265,7 +266,7 @@ public:
 
     MaterialHandle LoadMaterial(const std::string &path);
 
-    ShaderHandle LoadShader(const std::string &path);
+    PipelineHandle LoadPipeline(const PipelineCreateInfo &info);
 
     // Resource Deletion
     void UnloadMesh(MeshHandle);
@@ -274,7 +275,7 @@ public:
 
     void UnloadMaterial(MaterialHandle);
 
-    void UnloadShader(ShaderHandle);
+    void UnloadPipeline(PipelineHandle);
 
 
     void UnloadAllMeshes();
@@ -288,10 +289,10 @@ public:
 
     Material *GetMaterial(MaterialHandle);
 
-    Shader *GetShader(ShaderHandle);
+    Pipeline *GetPipeline(PipelineHandle);
 
     // Hot Reloads
-    void ReloadShader(ShaderHandle);
+    void ReloadPipeline(PipelineHandle);
 
     void ReloadTexture(TextureHandle);
 
@@ -314,12 +315,13 @@ public:
 
 private:
     Device *m_device;
+    EventSystem *m_eventSystem;
 
     // Resource Pools
     ResourcePool<Mesh, MeshHandle> m_meshPool;
     ResourcePool<Texture, TextureHandle> m_texturePool;
     ResourcePool<Material, MaterialHandle> m_materialPool;
-    ResourcePool<Shader, ShaderHandle> m_shaderPool;
+    ResourcePool<Pipeline, PipelineHandle> m_pipelinePool;
 
     // Async Loading
     std::queue<std::function<void()> > loadingQueue;

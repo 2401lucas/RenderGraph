@@ -9,10 +9,11 @@
 enum class BufferUsage {
     Vertex      = 1 << 0,
     Index       = 1 << 1,
-    Constant    = 1 << 2,
+    Uniform    = 1 << 2,
     Storage     = 1 << 3,
-    Indirect    = 1 << 4,
-    Transfer    = 1 << 5,
+    UnorderedAccess    = 1 << 4,
+    CopySource    = 1 << 5,
+    CopyDest    = 1 << 6,
 };
 
 enum MemoryType {
@@ -34,14 +35,12 @@ public:
 
     // Map/Unmap for CPU access (only valid for Upload/Readback buffers)
     virtual void* Map() = 0;
+    virtual void* GetMappedPtr() const = 0;
     virtual void Unmap() = 0;
 
     // Getters
     virtual uint64_t GetSize() const = 0;
     virtual uint64_t GetGPUAddress() const = 0;
-
-    // Internal - get native handle (D3D12Resource, VkBuffer, etc.)
-    virtual void* GetNativeHandle() const = 0;
 };
 
 

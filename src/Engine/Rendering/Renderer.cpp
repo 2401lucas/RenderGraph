@@ -3,6 +3,7 @@
 //
 // Engine/Rendering/Renderer.cpp
 #include "Renderer.h"
+#include "Renderer.h"
 #include "RenderGraph/RenderGraph.h"
 #include "RenderGraph/RenderPass.h"
 #include "RHI/Device.h"
@@ -17,20 +18,6 @@
 Renderer::Renderer(Window *window, Device *device, ResourceManager *resourceManager)
     : m_window(window), m_device(device), m_resourceManager(resourceManager)
       , m_isFrameStarted(false) {
-    // Initialize camera to default values
-    m_camera.position[0] = 0.0f;
-    m_camera.position[1] = 0.0f;
-    m_camera.position[2] = 5.0f;
-    m_camera.forward[0] = 0.0f;
-    m_camera.forward[1] = 0.0f;
-    m_camera.forward[2] = -1.0f;
-    m_camera.up[0] = 0.0f;
-    m_camera.up[1] = 1.0f;
-    m_camera.up[2] = 0.0f;
-    m_camera.fov = 60.0f;
-    m_camera.nearPlane = 0.1f;
-    m_camera.farPlane = 1000.0f;
-
     // Initialize directional light
     m_directionalLight.direction[0] = -1.0f;
     m_directionalLight.direction[1] = -1.0f;
@@ -40,32 +27,72 @@ Renderer::Renderer(Window *window, Device *device, ResourceManager *resourceMana
     m_directionalLight.color[2] = 1.0f;
     m_directionalLight.intensity = 1.0f;
 
-    m_commandQueue = m_device->CreateCommandQueue();
-
-    // Create per-frame resources
-    for (uint32_t i = 0; i < FrameCount; i++) {
-        m_frameResources[i].commandList = m_device->CreateCommandList();
-    }
+    CommandQueueCreateInfo graphicsQueueCI = {
+        .type = QueueType::Graphics,
+        .debugName = "Main Graphics Queue"
+    };
+    m_graphicsQueue = std::unique_ptr<CommandQueue>(m_device->CreateCommandQueue(graphicsQueueCI));
 
     // Create RenderGraph
-    m_renderGraph = std::make_unique<RenderGraph>(m_device);
+    m_renderGraph = std::make_unique<RenderGraph>(m_device, m_graphicsQueue.get(), FrameCount);
+
+    //TODO REMOVE WHEN PROPERLY IMPLEMENTED
+    PipelineCreateInfo pipelineCI{
+        .vertexShader = {
+            .filepath = "assets/shaders/shaders.hlsl",
+            .entry = "VSMain",
+            .stage = ShaderStage::Vertex
+        },
+        .pixelShader = {
+            .filepath = "assets/shaders/shaders.hlsl",
+            .entry = "PSMain",
+            .stage = ShaderStage::Pixel
+        },
+        .vertexAttributes = {
+            {"POSITION", 0, TextureFormat::RGB32_FLOAT, offsetof(Vertex, position)},
+            {"NORMAL", 0, TextureFormat::RGB32_FLOAT, offsetof(Vertex, normal)},
+            {"TEXCOORD", 0, TextureFormat::RG32_FLOAT, offsetof(Vertex, texCoord)},
+            {"TANGENT", 0, TextureFormat::RGB32_FLOAT, offsetof(Vertex, tangent)},
+        },
+        .vertexAttributeCount = 4,
+        .vertexStride = sizeof(Vertex),
+        .cullMode = CullMode::Back,
+        .wireframe = false,
+        .sampleCount = 1,
+        .topology = PrimitiveTopology::TriangleList,
+        .depthTestEnable = true,
+        .depthWriteEnable = true,
+        .depthFunc = CompareFunc::Less,
+        .blendMode = BlendMode::None,
+        .renderTargetFormats = {TextureFormat::RGBA8_UNORM},
+        .renderTargetCount = 1,
+        .depthStencilFormat = TextureFormat::Depth32,
+        .dynamicViewport = true,
+        .dynamicScissor = true,
+        .debugName = "MainPipeline",
+    };
+
+    m_mainPipeline = std::unique_ptr<Pipeline>(m_device->CreatePipeline(pipelineCI));
+
+    BufferCreateInfo bufferCI = {
+        .size = sizeof(PerObjData),
+        .usage = BufferUsage::Uniform,
+        .memoryType = MemoryType::Upload,
+        .debugName = "PerObjDataBuffer",
+    };
+    m_swapchain = std::unique_ptr<Swapchain>(
+        m_device->CreateSwapchain(window->getHwnd(), m_graphicsQueue.get(), window->getWidth(), window->getHeight()));
+    m_perObjData = std::unique_ptr<Buffer>(m_device->CreateBuffer(bufferCI));
+    m_graphicsQueue->WaitIdle();
+    m_perObjData->Map();
 }
 
 Renderer::~Renderer() {
+    if (m_renderGraph) {
+        m_renderGraph->Flush();
+    }
+
     WaitForGPU();
-
-    // Cleanup frame resources
-    for (auto &frameRes: m_frameResources) {
-        if (frameRes.commandList) {
-            // m_device->DestroyCommandList(frameRes.commandList);
-            frameRes.commandList = nullptr;
-        }
-    }
-
-    if (m_commandQueue) {
-        // m_device->DestroyCommandQueue(m_commandQueue);
-        m_commandQueue = nullptr;
-    }
 
     OutputDebugStringA("Renderer: Shutdown complete\n");
 }
@@ -85,13 +112,21 @@ void Renderer::BeginFrame() {
         throw std::runtime_error("BeginFrame called twice without EndFrame");
     }
 
-    m_isFrameStarted = true;
+    // Wait ONLY for the specific frame we're about to reuse
+    // This allows other frames to still be in-flight (better GPU utilization)
+    uint32_t nextFrameIndex = (m_frameIndex + 1) % FrameCount;
+    uint64_t fenceValueToWaitFor = m_frameResources[nextFrameIndex].fenceValue;
+    if (fenceValueToWaitFor > 0) {
+        m_graphicsQueue->WaitForFence(fenceValueToWaitFor);
+    }
 
-    // Clear submissions from previous frame
+    m_graphicsQueue->BeginFrame(nextFrameIndex);
+    m_renderGraph->NextFrame();
+    m_frameIndex = nextFrameIndex;
+
+    m_isFrameStarted = true;
     m_submissions.clear();
     m_batches.clear();
-
-    // Reset statistics
     m_statistics = Statistics{};
 }
 
@@ -100,27 +135,29 @@ void Renderer::EndFrame() {
         throw std::runtime_error("EndFrame called without BeginFrame");
     }
 
-    // 1. Process submissions (sort, batch, optimize)
+    m_camera->SetAspectRatio(m_window->getAspectRatio());
+
+    // 1. Process submissions
     ProcessSubmissions();
 
-    // 2. Build and execute RenderGraph
+    // 2. Build RenderGraph
     BuildRenderGraph();
-    ExecuteRenderGraph();
 
-    // 3. Present
-    Present();
+    // 3. Execute RenderGraph
+    CommandList *commandList = m_renderGraph->Execute();
+
+    // 4. Submit to queue with fence
+    m_currentFenceValue++;
+    m_graphicsQueue->Execute(commandList);
+    m_graphicsQueue->Signal(m_currentFenceValue);
+    m_graphicsQueue->WaitIdle();
+    // Track fence value for this frame
+    m_frameResources[m_frameIndex].fenceValue = m_currentFenceValue;
+
+    // 5. Present
+    m_swapchain->Present(m_window->isVSync());
 
     m_isFrameStarted = false;
-
-    // Move to next frame
-    m_frameIndex = (m_frameIndex + 1) % FrameCount;
-}
-
-void Renderer::Present() {
-    // Present is handled by RenderGraph/Device
-    // This is a placeholder for any additional present logic
-
-    //TODO implement
 }
 
 // ===== Submission API =====
@@ -133,10 +170,8 @@ void Renderer::Submit(const std::vector<RenderInfo> &infos) {
     m_submissions.insert(m_submissions.end(), infos.begin(), infos.end());
 }
 
-void Renderer::SetCamera(const Camera &camera) {
-    // Copy camera data
-    // This would need actual Camera class implementation
-    // For now, this is a placeholder
+void Renderer::SetCamera(Camera &camera) {
+    m_camera = &camera;
 }
 
 void Renderer::SetDirectionalLight(const float direction[3], const float color[3], float intensity) {
@@ -251,16 +286,18 @@ void Renderer::BuildRenderGraph() {
     uint32_t width = m_window->getWidth();
     uint32_t height = m_window->getHeight();
 
-    // Register External Resources
-
-    m_renderGraph->RegisterExternalTexture("Backbuffer", m_swapchain->GetSwapchainBuffer(m_frameIndex));
+    // Register backbuffer as external resource
+    // It comes in as Present from last frame, or Undefined on first frame
+    Texture *backbuffer = m_swapchain->GetSwapchainBuffer(m_frameIndex);
+    m_renderGraph->RegisterExternalTexture("Backbuffer", backbuffer, TextureUsage::Present);
     m_renderGraph->SetPresentTarget("Backbuffer");
 
-    // Shadow pass
+    // Shadow pass (if enabled)
     if (m_shadowsEnabled && !m_batches.empty()) {
         auto shadowPass = RenderPassBuilder("Shadow")
                 .WriteTexture("ShadowMap", m_shadowMapSize, m_shadowMapSize,
-                              RenderPassResource::Format::Depth32)
+                              RenderPassResource::Format::Depth32,
+                              TextureUsage::DepthStencil)
                 .Execute([this](RenderPassContext &ctx) {
                     RenderShadows(ctx);
                 })
@@ -268,14 +305,16 @@ void Renderer::BuildRenderGraph() {
 
         m_renderGraph->AddPass(std::move(shadowPass));
     }
+
     // Main geometry pass
     auto mainPass = RenderPassBuilder("Main")
-            // .ReadTexture("ShadowMap")
-            //.WriteTexture("SceneColor", width, height, RenderPassResource::Format::RGBA16F)
-            .WriteTexture("Backbuffer", width, height, RenderPassResource::Format::RGBA16F, ResourceState::RenderTarget,
-                          PipelineStage::RenderTarget)
-            .WriteTexture("SceneDepth", width, height, RenderPassResource::Format::Depth32, ResourceState::DepthWrite,
-                          PipelineStage::DepthStencil)
+            .ReadTexture("ShadowMap", TextureUsage::ShaderResource) // If shadows enabled
+            .WriteTexture("Backbuffer", width, height,
+                          RenderPassResource::Format::RGBA16F,
+                          TextureUsage::RenderTarget)
+            .WriteTexture("SceneDepth", width, height,
+                          RenderPassResource::Format::Depth32,
+                          TextureUsage::DepthStencil)
             .Execute([this](RenderPassContext &ctx) {
                 RenderMain(ctx);
             })
@@ -283,22 +322,13 @@ void Renderer::BuildRenderGraph() {
 
     m_renderGraph->AddPass(std::move(mainPass));
 
-    // Particle pass
-    // auto particlePass = RenderPassBuilder("Particles")
-    //         .ReadTexture("SceneDepth")
-    //         .ReadWriteTexture("SceneColor")
-    //         .Execute([this](RenderPassContext &ctx) {
-    //             RenderParticles(ctx);
-    //         })
-    //         .Build();
-    //
-    // m_renderGraph->AddPass(std::move(particlePass));
-
-    // Post-process pass
+    // Post-process (if enabled)
     if (m_postProcessingEnabled) {
         auto postPass = RenderPassBuilder("PostProcess")
-                .ReadTexture("SceneColor")
-                .WriteTexture("FinalColor", width, height, RenderPassResource::Format::RGBA8)
+                .ReadTexture("SceneColor", TextureUsage::ShaderResource)
+                .WriteTexture("FinalColor", width, height,
+                              RenderPassResource::Format::RGBA8,
+                              TextureUsage::RenderTarget)
                 .Execute([this](RenderPassContext &ctx) {
                     RenderPostProcess(ctx);
                 })
@@ -306,20 +336,6 @@ void Renderer::BuildRenderGraph() {
 
         m_renderGraph->AddPass(std::move(postPass));
     }
-
-    // UI pass
-    // auto uiPass = RenderPassBuilder("UI")
-    //         .ReadWriteTexture("FinalColor")
-    //         .Execute([this](RenderPassContext &ctx) {
-    //             RenderUI(ctx);
-    //         })
-    //         .Build();
-    //
-    // m_renderGraph->AddPass(std::move(uiPass));
-}
-
-void Renderer::ExecuteRenderGraph() {
-    m_renderGraph->Execute();
 }
 
 // ===== Rendering Functions =====
@@ -347,20 +363,53 @@ void Renderer::RenderShadows(RenderPassContext &ctx) {
 
 void Renderer::RenderMain(RenderPassContext &ctx) {
     // Clear
-    constexpr float clearColor[4] = {0.1f, 0.1f, 0.1f, 1.0f};
-    Clear(clearColor);
+    const float clearColor[4] = {1.0f, 0.1f, 0.1f, 1.0f};
+    auto renderTarget = ctx.GetTexture("Backbuffer");
+    auto depthTarget = ctx.GetTexture("SceneDepth");
+
+    ctx.commandList->ClearRenderTarget(renderTarget, clearColor);
+    //ctx.commandList->ClearDepthStencil(depthTarget, 1.0f, 0);
+
+    // Set render targets
+    //ctx.commandList->SetRenderTarget(renderTarget, depthTarget);
+
+    // Set viewport and scissor
+    Viewport vp = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width = static_cast<float>(m_window->getWidth()),
+        .height = static_cast<float>(m_window->getHeight()),
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f
+    };
+    ctx.commandList->SetViewport(vp);
+
+    Rect scissor = {
+        .left = 0,
+        .top = 0,
+        .right = static_cast<int32_t>(m_window->getWidth()),
+        .bottom = static_cast<int32_t>(m_window->getHeight())
+    };
+    ctx.commandList->SetScissor(scissor);
+
     // Render all batches
     for (const auto &batch: m_batches) {
-        // ctx.commandList->SetPipeline(m_resourceManager->GetShader(m_resourceManager->LoadShader(batch.material->GetShader()));); // TODO Some sort of active check to see if pipeline rebind is required?
+        // ctx.commandList->SetPipeline(m_mainPipeline.get());
+        // ctx.commandList->SetPrimitiveTopology(PrimitiveTopology::TriangleList);
         ctx.commandList->SetTexture(m_resourceManager->GetTexture(batch.material->GetAlbedoTexture()), 0);
         ctx.commandList->SetVertexBuffer(batch.mesh->GetVertexBuffer());
         ctx.commandList->SetIndexBuffer(batch.mesh->GetIndexBuffer());
 
         // Update per-object constants
-        // Draw
+        PerObjData data;
+        memcpy(m_perObjData->GetMappedPtr(), &data, sizeof(PerObjData));
+        ctx.commandList->SetConstantBuffer(m_perObjData.get(), 0);
+
+        // TODO:
+        //  Bindless
+        //  GPU GENERATED COMMANDS
 
         if (batch.transforms.size() == 1) {
-            // Single draw
             ctx.commandList->Draw(batch.mesh->GetVertexCount(), 0);
         } else {
             // Instanced draw
@@ -383,72 +432,6 @@ void Renderer::RenderPostProcess(RenderPassContext &ctx) {
 //TODO implement
 void Renderer::RenderUI(RenderPassContext &ctx) {
     // Render UI elements
-}
-
-//TODO: REMOVE
-// void Renderer::UploadBufferData(Buffer *buffer, const void *data, size_t size) {
-//     // Create staging buffer
-//     BufferCreateInfo stagingInfo{
-//         .size = size,
-//         .usage = BufferUsage::Transfer,
-//         .memoryType = MemoryType::Upload,
-//     };
-//
-//     Buffer *stagingBuffer = m_device->CreateBuffer(stagingInfo);
-//
-//     // Map and copy
-//     void *mapped = stagingBuffer->Map();
-//     memcpy(mapped, data, size);
-//     stagingBuffer->Unmap();
-//
-//     // Copy to GPU buffer
-//     CommandList *cmdList = m_frameResources[m_frameIndex].commandList;
-//     cmdList->Begin();
-//     cmdList->CopyBuffer(stagingBuffer, buffer, size);
-//     cmdList->End();
-//
-//     // Execute
-//     m_commandQueue->Execute(cmdList);
-//     m_commandQueue->WaitIdle();
-//
-//     // Cleanup
-//     m_device->DestroyBuffer(stagingBuffer);
-// }
-//
-// void Renderer::UploadTextureData(Texture *texture, const void *data, size_t size) {
-//     // Create staging buffer
-//     BufferCreateInfo stagingInfo{
-//         .size = size,
-//         .usage = BufferUsage::Transfer,
-//         .memoryType = MemoryType::Upload,
-//     };
-//
-//     Buffer *stagingBuffer = m_device->CreateBuffer(stagingInfo);
-//
-//     // Map and copy
-//     void *mapped = stagingBuffer->Map();
-//     memcpy(mapped, data, size);
-//     stagingBuffer->Unmap();
-//
-//     // Copy to GPU buffer
-//     CommandList *cmdList = m_frameResources[m_frameIndex].commandList;
-//     cmdList->Begin();
-//     cmdList->TransitionTexture(texture, Undefined, TransferDst);
-//     cmdList->CopyBufferToTexture(stagingBuffer, texture);
-//     cmdList->TransitionTexture(texture, TransferDst, ShaderReadOnly);
-//     cmdList->End();
-//
-//     // Execute
-//     m_commandQueue->Execute(cmdList);
-//     m_commandQueue->WaitIdle();
-//
-//     // Cleanup
-//     m_device->DestroyBuffer(stagingBuffer);
-// }
-
-void Renderer::Clear(const float color[4]) {
-    // Clear is handled by RenderGraph passes
-    // This is a placeholder
 }
 
 void Renderer::WaitForGPU() {

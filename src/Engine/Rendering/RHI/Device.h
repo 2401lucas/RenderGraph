@@ -31,19 +31,17 @@ public:
 
     // ===== Factory Methods =====
 
-    virtual CommandQueue *CreateCommandQueue() = 0;
+    virtual CommandQueue *CreateCommandQueue(const CommandQueueCreateInfo &createInfo) = 0;
 
-    virtual CommandList *CreateCommandList() = 0;
+    virtual CommandList *CreateCommandList(QueueType) = 0;
 
-    virtual Swapchain *CreateSwapchain(void *windowHandle, uint32_t width, uint32_t height) = 0;
+    virtual Swapchain *CreateSwapchain(void *windowHandle, CommandQueue *queue, uint32_t width, uint32_t height) = 0;
 
     virtual Buffer *CreateBuffer(const BufferCreateInfo &desc) = 0;
 
     virtual Texture *CreateTexture(const TextureCreateInfo &desc) = 0;
 
-    virtual Shader *CreateShader(const std::string &path) = 0;
-
-    virtual Pipeline *CreatePipeline(const PipelineDesc &desc) = 0;
+    virtual Pipeline *CreatePipeline(const PipelineCreateInfo &desc) = 0;
 
     // ===== Resource Management =====
 
@@ -54,8 +52,6 @@ public:
     virtual void DestroyBuffer(Buffer *buffer) = 0;
 
     virtual void DestroyTexture(Texture *texture) = 0;
-
-    virtual void DestroyShader(Shader *shader) = 0;
 
     virtual void DestroyPipeline(Pipeline *pipeline) = 0;
 

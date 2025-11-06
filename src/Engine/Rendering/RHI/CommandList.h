@@ -12,13 +12,6 @@
 #include "Resource.h"
 #include "Texture.h"
 
-enum class PrimitiveTopology {
-    TriangleList,
-    TriangleStrip,
-    LineList,
-    PointList
-};
-
 struct Viewport {
     float x, y;
     float width, height;
@@ -90,12 +83,12 @@ public:
 
     // ===== Resource Barriers (State Transitions) =====
     virtual void TransitionTexture(Texture *texture,
-                                   ResourceState oldState,
-                                   ResourceState newState) = 0;
+                                   TextureUsage oldState,
+                                   TextureUsage newState) = 0;
 
     virtual void TransitionBuffer(Buffer *buffer,
-                                  ResourceState oldState,
-                                  ResourceState newState) = 0;
+                                  BufferUsage oldState,
+                                  BufferUsage newState) = 0;
 
     // ===== Render Targets =====
 

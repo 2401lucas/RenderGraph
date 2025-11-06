@@ -20,17 +20,16 @@ void Engine::Initialize(std::unique_ptr<Application> app, const int width, const
     DeviceCreateInfo deviceInfo{.enableDebugLayer = true, .enableGPUValidation = true, .preferredAdapterIndex = 0};
     m_device = Device::Create(deviceInfo);
 
-    m_resources = std::make_unique<ResourceManager>(m_device.get());
+    m_event = std::make_unique<EventSystem>();
+
+    m_resources = std::make_unique<ResourceManager>(m_device.get(), m_event.get());
     m_renderer = std::make_unique<Renderer>(m_window.get(), m_device.get(), m_resources.get());
 
     m_input = std::make_unique<InputManager>(m_window.get());
     m_input->setCallbackMode(InputManager::CallbackMode::Queued);
 
-    m_event = std::make_unique<EventSystem>();
-
     m_application->OnInitialize(*this);
 }
-
 
 void Engine::Run() {
     auto lastTime = std::chrono::high_resolution_clock::now();
@@ -56,7 +55,6 @@ void Engine::Run() {
 
         // Rendering: Application submits, Renderer executes
         m_application->OnRender(*this); // Fills submission queue
-        m_renderer->Present(); // Executes submissions
         m_resources->Update();
     }
 }

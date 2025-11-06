@@ -5,7 +5,8 @@
 #ifndef GPU_PARTICLE_SIM_PIPELINE_H
 #define GPU_PARTICLE_SIM_PIPELINE_H
 
-#include "Shader.h"
+#include <string>
+#include <vector>
 #include "Texture.h"
 
 enum class PipelineStage {
@@ -43,26 +44,56 @@ enum class CompareFunc {
     Always
 };
 
-struct PipelineDesc {
-    // ShaderHandle  vertexShader = nullptr;
-    // ShaderHandle  pixelShader = nullptr;
-    // ShaderHandle  computeShader = nullptr
+enum class PrimitiveTopology {
+    TriangleList,
+    TriangleStrip,
+    LineList,
+    LineStrip,
+    PointList
+};
+
+enum class ShaderStage {
+    Vertex,
+    Pixel,
+    Compute,
+    Geometry,
+    Hull,
+    Domain
+};
+
+struct Shader {
+    std::string filepath = "";
+    std::string entry = "main";
+    ShaderStage stage;
+
+    bool IsValid() {
+        return !filepath.empty();
+    }
+};
+
+struct PipelineCreateInfo {
+    Shader vertexShader;
+    Shader pixelShader;
+    Shader computeShader;
 
     // Input layout
     struct VertexAttribute {
         const char *semantic;
         uint32_t index;
-        //TextureFormat format;
+        TextureFormat format;
         uint32_t offset;
     };
 
-    VertexAttribute *vertexAttributes = nullptr;
+    std::vector<VertexAttribute> vertexAttributes;
     uint32_t vertexAttributeCount = 0;
     uint32_t vertexStride = 0;
 
     // Rasterizer state
     CullMode cullMode = CullMode::Back;
     bool wireframe = false;
+    uint32_t sampleCount = 1;
+
+    PrimitiveTopology topology = PrimitiveTopology::TriangleList;
 
     // Depth/Stencil state
     bool depthTestEnable = true;
@@ -73,9 +104,12 @@ struct PipelineDesc {
     BlendMode blendMode = BlendMode::None;
 
     // Render target formats
-    // TextureFormat renderTargetFormats[8] = {};
-    // uint32_t renderTargetCount = 1;
-    // TextureFormat depthStencilFormat = TextureFormat::Depth32;
+    TextureFormat renderTargetFormats[8] = {};
+    uint32_t renderTargetCount = 1;
+    TextureFormat depthStencilFormat = TextureFormat::Depth32;
+
+    bool dynamicViewport = true;
+    bool dynamicScissor = true;
 
     const char *debugName = nullptr;
 };

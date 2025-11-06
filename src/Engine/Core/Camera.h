@@ -6,7 +6,6 @@
 #define GPU_PARTICLE_SIM_CAMERA_H
 #include "Transform.h"
 
-// TODO Req: IMPLEMENT CAMERA
 class Camera {
 public:
     Camera(Transform, float aspectRatio, float fov, float zNear, float zFar);
@@ -33,16 +32,14 @@ public:
 
     void SetZFar(float);
 
-    void GetPerspective() const;
-
-    void GetFrustum() const;
+    glm::mat4x4 GetPerspective();
 
 private:
     void CalculatePerspectiveMatrix();
 
     Transform m_transform;
     bool m_updatePerspective = true;
-    float m_perspectiveMat[16];
+    glm::mat4x4 m_perspectiveMat;
     float m_aspectRatio;
     float m_fov;
     float m_zNear;

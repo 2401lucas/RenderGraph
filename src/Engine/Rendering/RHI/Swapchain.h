@@ -9,6 +9,8 @@
 
 #include "Texture.h"
 
+static constexpr uint32_t FrameCount = 2;
+
 enum class SwapchainPresentResult {
     Success,
     Error
@@ -16,17 +18,18 @@ enum class SwapchainPresentResult {
 
 class Swapchain {
 public:
-    Swapchain();
+    /// <summary>
+    /// Sends the current Swapchain buffer to the GPU and gets the next swapchain buffer index
+    /// </summary>
+    virtual SwapchainPresentResult Present(bool vsync) = 0;
 
-    virtual ~Swapchain();
-
-    virtual SwapchainPresentResult Present() = 0;
+    virtual void Resize(uint32_t width, uint32_t height) = 0;
 
     virtual const TextureFormat GetColorFormat() const = 0;
 
     virtual const uint32_t GetImageCount() const = 0;
 
-    virtual Texture* GetSwapchainBuffer(uint32_t frameIndex) const = 0;
+    virtual Texture *GetSwapchainBuffer(uint32_t frameIndex) const = 0;
 };
 
 #endif //GPU_PARTICLE_SIM_SWAPCHAIN_H

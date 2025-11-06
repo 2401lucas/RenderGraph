@@ -4,25 +4,33 @@
 
 #include "Transform.h"
 
-Transform Transform::Identity() {
-    Transform t;
-    for (int i = 0; i < 16; i++) t.matrix[i] = 0.0f;
-    t.matrix[0] = t.matrix[5] = t.matrix[10] = t.matrix[15] = 1.0f;
-    return t;
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+
+Transform::Transform() {
+    m_position = glm::vec3(0, 0, 0);
+    m_position = glm::vec3(0, 0, 0);
+    m_scale = glm::vec3(1, 1, 1);
+    m_transformMatUpdated = true;
 }
 
-Transform Transform::Translation(float x, float y, float z) {
-    Transform t = Identity();
-    t.matrix[12] = x;
-    t.matrix[13] = y;
-    t.matrix[14] = z;
-    return t;
+Transform::Transform(glm::vec3 pos, glm::vec3 rot, glm::vec3 sca)
+    : m_position(pos), m_rotation(rot), m_scale(sca) {
+    m_transformMatUpdated = true;
 }
 
-Transform Transform::Scale(float x, float y, float z) {
-    Transform t = Identity();
-    t.matrix[0] = x;
-    t.matrix[5] = y;
-    t.matrix[10] = z;
-    return t;
+void Transform::CalculateTransformMat() {
+    glm::mat4 rotMat = glm::mat4(1.0f);
+    rotMat = glm::rotate(rotMat, glm::radians(m_rotation.x * -1.0f),
+                         glm::vec3(1.0f, 0.0f, 0.0f));
+    rotMat = glm::rotate(rotMat, glm::radians(m_rotation.y),
+                         glm::vec3(0.0f, 1.0f, 0.0f));
+    rotMat = glm::rotate(rotMat, glm::radians(m_rotation.z),
+                         glm::vec3(0.0f, 0.0f, 1.0f));
+
+    glm::mat4 posMat = glm::translate(glm::mat4(1.0f), m_position);
+    glm::mat4 scaleMat = glm::scale(glm::mat4(1.0f), m_scale);
+
+    m_transformMat = posMat * rotMat * scaleMat;
+    m_transformMatUpdated = false;
 }

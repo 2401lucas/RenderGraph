@@ -77,12 +77,6 @@ public:
     /// </summary>
     void EndFrame();
 
-    /// <summary>
-    /// Present the frame to the screen.
-    /// Called automatically by EndFrame, but can be called manually.
-    /// </summary>
-    void Present();
-
     // ===== Submission API (Called by Application) =====
 
     /// <summary>
@@ -98,20 +92,12 @@ public:
     /// <summary>
     /// Set the active camera for this frame
     /// </summary>
-    void SetCamera(const Camera &camera);
+    void SetCamera(Camera &camera);
 
     /// <summary>
     /// Set directional light (sun)
     /// </summary>
     void SetDirectionalLight(const float direction[3], const float color[3], float intensity);
-
-    // ===== Helper Functions =====
-
-    /// <summary>
-    /// Clear the screen to a solid color.
-    /// Typically called internally by RenderGraph.
-    /// </summary>
-    void Clear(const float color[4]);
 
     // ===== Configuration =====
 
@@ -149,17 +135,15 @@ public:
     const Statistics &GetStatistics() const { return m_statistics; }
 
 private:
-    // ===== Internal Structures =====
-
-    static const uint32_t FrameCount = 2;
-
+    // ===== Syncronization =====
     struct FrameResources {
-        CommandList *commandList = nullptr;
-        // Additional per-frame resources
+        uint64_t fenceValue = 0;
     };
 
-    // ===== Core Resources =====
+    FrameResources m_frameResources[FrameCount];
+    uint64_t m_currentFenceValue = 0;
 
+    // ===== Core Resources =====
     Window *m_window;
     ResourceManager *m_resourceManager;
     Device *m_device;
@@ -167,26 +151,31 @@ private:
     std::unique_ptr<Swapchain> m_swapchain;
 
     // Command infrastructure
-    CommandQueue *m_commandQueue = nullptr;
-    FrameResources m_frameResources[FrameCount];
+    std::unique_ptr<CommandQueue> m_graphicsQueue = nullptr;
+    std::unique_ptr<CommandQueue> m_computeQueue = nullptr;
+    std::unique_ptr<CommandQueue> m_transferQueue = nullptr;
+
+    // TODO: MANAGE PROPERLY
+    std::unique_ptr<Pipeline> m_mainPipeline;
+    std::unique_ptr<Buffer> m_perObjData;
+
     uint32_t m_frameIndex = 0;
 
     // ===== Submission Data =====
+
+    struct PerObjData {
+        float cameraPV[16];
+        float cameraPerspective[16];
+        float cameraView[16];
+        float model[16];
+    };
+
 
     std::vector<RenderInfo> m_submissions;
     std::vector<RenderBatch> m_batches;
 
     // Scene data
-    struct {
-        float position[3];
-        float forward[3];
-        float up[3];
-        float fov;
-        float nearPlane;
-        float farPlane;
-        float viewMatrix[16];
-        float projectionMatrix[16];
-    } m_camera;
+    Camera *m_camera;
 
     struct {
         float direction[3];
@@ -222,16 +211,17 @@ private:
 
     void ExecuteRenderGraph();
 
+    // TODO: make own class
     // Rendering functions (passed to RenderGraph)
-    void RenderShadows(class RenderPassContext &ctx);
+    void RenderShadows(RenderPassContext &ctx);
 
-    void RenderMain(class RenderPassContext &ctx);
+    void RenderMain(RenderPassContext &ctx);
 
-    void RenderParticles(class RenderPassContext &ctx);
+    void RenderParticles(RenderPassContext &ctx);
 
-    void RenderPostProcess(class RenderPassContext &ctx);
+    void RenderPostProcess(RenderPassContext &ctx);
 
-    void RenderUI(class RenderPassContext &ctx);
+    void RenderUI(RenderPassContext &ctx);
 
     // Helpers
     void WaitForGPU();
