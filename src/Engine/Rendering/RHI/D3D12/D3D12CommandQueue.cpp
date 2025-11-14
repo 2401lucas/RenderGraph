@@ -22,13 +22,12 @@ D3D12CommandQueue::~D3D12CommandQueue() {
 void D3D12CommandQueue::BeginFrame(uint32_t frameIndex) {
     m_currentFrameIndex = frameIndex;
 
-    // Wait for this specific frame to complete
     uint64_t fenceValue = m_fenceValues[frameIndex];
     if (fenceValue > 0 && m_fence->GetCompletedValue() < fenceValue) {
         WaitForFence(fenceValue);
     }
 
-    // Reset allocator for this frame (safe now that GPU is done with it)
+    // Reset allocator for this frame
     DX_CHECK(m_allocators[frameIndex]->Reset());
 }
 
@@ -52,7 +51,6 @@ void D3D12CommandQueue::WaitForFence(uint64_t fenceValue) {
 }
 
 void D3D12CommandQueue::WaitIdle() {
-    // Signal a new fence value and wait for it
     uint64_t fenceValue = m_nextFenceValue++;
     DX_CHECK(m_commandQueue->Signal(m_fence.Get(), fenceValue));
     WaitForFence(fenceValue);
@@ -61,6 +59,11 @@ void D3D12CommandQueue::WaitIdle() {
 void D3D12CommandQueue::AssignCommandList(CommandList* cmdList, uint32_t frameIndex) {
     D3D12CommandList* d3d12CmdList = static_cast<D3D12CommandList*>(cmdList);
     d3d12CmdList->SetAllocator(m_allocators[frameIndex].Get());
+}
+
+uint64_t D3D12CommandQueue::GetCompletedFenceValue() const {
+    return m_nextFenceValue;
+
 }
 
 ID3D12CommandAllocator *D3D12CommandQueue::GetAllocator(uint32_t frameIndex) const {

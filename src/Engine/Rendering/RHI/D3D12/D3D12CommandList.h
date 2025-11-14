@@ -5,6 +5,7 @@
 #ifndef GPU_PARTICLE_SIM_D3D12COMMANDLIST_H
 #define GPU_PARTICLE_SIM_D3D12COMMANDLIST_H
 
+#include "D3D12BindlessDescriptorManager.h"
 #include "Rendering/RHI/CommandList.h"
 #include "D3D12Common.h"
 
@@ -13,9 +14,8 @@ public:
     D3D12CommandList() = default;
     ~D3D12CommandList() override = default;
 
-    void Begin() override;
+    void Begin(BindlessDescriptorManager* bindlessManager) override;
     void End() override;
-    void Reset() override;  // Should NOT be called directly - use CommandQueue::BeginFrame
 
     void SetPipeline(Pipeline *pipeline) override;
     void SetViewport(const Viewport &viewport) override;
@@ -24,7 +24,7 @@ public:
 
     void SetVertexBuffer(Buffer *buffer, uint32_t slot) override;
     void SetIndexBuffer(Buffer *buffer) override;
-    void SetConstantBuffer(Buffer *buffer, uint32_t slot) override;
+    void SetConstantBuffer(Buffer *buffer, uint32_t slot, uint32_t offset) override;
     void SetTexture(Texture *texture, uint32_t slot) override;
 
     void Draw(uint32_t vertexCount, uint32_t startVertex) override;
@@ -49,8 +49,11 @@ public:
     // D3D12-specific
     ID3D12GraphicsCommandList* GetNative() const { return m_cmdList.Get(); }
 
-    // Called by Device during creation to set allocator
     void SetAllocator(ID3D12CommandAllocator* allocator) { m_allocator = allocator; }
+
+    void BindBindlessDescriptorHeaps(D3D12BindlessDescriptorManager* manager);
+
+    void SetBindlessResource(uint32_t resourceIndex, uint32_t rootParameterIndex);
 
 private:
     friend class D3D12Device;
@@ -64,6 +67,8 @@ private:
     ID3D12PipelineState* m_currentPSO = nullptr;
     D3D12_PRIMITIVE_TOPOLOGY m_currentTopology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
     bool m_isRecording = false;
+
+    ID3D12RootSignature* m_currentRootSignature;
 
     // Helper functions
     static D3D12_RESOURCE_STATES TextureUsageToD3D12State(TextureUsage usage);

@@ -323,6 +323,8 @@ private:
     ResourcePool<Material, MaterialHandle> m_materialPool;
     ResourcePool<Pipeline, PipelineHandle> m_pipelinePool;
 
+    TextureHandle m_defaultTextureHandle;
+
     // Async Loading
     std::queue<std::function<void()> > loadingQueue;
     std::queue<std::function<void()> > uploadQueue;

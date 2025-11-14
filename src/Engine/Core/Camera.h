@@ -34,6 +34,8 @@ public:
 
     glm::mat4x4 GetPerspective();
 
+    glm::mat4x4 GetViewMatrix();
+
 private:
     void CalculatePerspectiveMatrix();
 

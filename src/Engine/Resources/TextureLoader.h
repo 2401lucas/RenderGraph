@@ -22,7 +22,6 @@ struct TextureData {
     std::string name;
 };
 
-
 class TextureLoader {
 public:
     // Load texture from file (auto-detects format)

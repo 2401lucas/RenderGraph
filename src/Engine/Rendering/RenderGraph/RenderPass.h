@@ -12,7 +12,6 @@
 #include <cstdint>
 
 #include "Rendering/RHI/CommandList.h"
-#include "Rendering/RHI/Resource.h"
 
 /// <summary>
 /// Resource description for render pass inputs/outputs
@@ -31,7 +30,7 @@ struct RenderPassResource {
         ReadWrite
     } access;
 
-    // ResourceState state = ResourceState::Common;
+    // Can be cast to either Texture or Buffer State flags
     uint32_t stateFlag = 0;
 
     PipelineStage stage = PipelineStage::PixelShader;
@@ -75,10 +74,6 @@ struct RenderPassContext {
     Buffer *GetBuffer(const std::string &name) const;
 };
 
-/// <summary>
-/// Execution function signature for render passes.
-/// Takes context and performs rendering operations.
-/// </summary>
 using RenderPassExecuteFunc = std::function<void(RenderPassContext &)>;
 
 /// <summary>
@@ -91,34 +86,15 @@ public:
 
     ~RenderPass();
 
-    // ===== Configuration =====
-
-    /// <summary>
-    /// Set the execution function for this pass
-    /// </summary>
     void SetExecuteFunc(RenderPassExecuteFunc func) { m_executeFunc = func; }
 
-    /// <summary>
-    /// Declare an input resource (read-only)
-    /// </summary>
     void AddInput(const RenderPassResource &desc);
 
-    /// <summary>
-    /// Declare an output resource (write)
-    /// </summary>
     void AddOutput(const RenderPassResource &desc);
 
-    /// <summary>
-    /// Declare a read-write resource
-    /// </summary>
     void AddReadWrite(const RenderPassResource &desc);
 
-    /// <summary>
-    /// Set whether this pass should be enabled
-    /// </summary>
     void SetEnabled(bool enabled) { m_enabled = enabled; }
-
-    // ===== Queries =====
 
     const std::string &GetName() const { return m_name; }
     bool IsEnabled() const { return m_enabled; }
@@ -128,12 +104,11 @@ public:
     const std::vector<RenderPassResource> &GetInputs() const { return m_inputs; }
     const std::vector<RenderPassResource> &GetOutputs() const { return m_outputs; }
 
-    /// <summary>
-    /// Execute this pass with the given context
-    /// </summary>
     void Execute(RenderPassContext &context);
 
 private:
+    friend class RenderGraph;
+
     std::string m_name;
     bool m_enabled = true;
 
@@ -141,8 +116,6 @@ private:
     std::vector<RenderPassResource> m_outputs;
 
     RenderPassExecuteFunc m_executeFunc;
-
-    friend class RenderGraph;
 };
 
 /// <summary>
@@ -153,27 +126,21 @@ class RenderPassBuilder {
 public:
     RenderPassBuilder(const std::string &name);
 
-    RenderPassBuilder &ReadTexture(const std::string &name,
-                                   TextureUsage state = TextureUsage::ShaderResource,
-                                   PipelineStage stage = PipelineStage::PixelShader);
+    RenderPassBuilder &ReadTexture(const std::string &name, TextureUsage state, PipelineStage stage);
 
     RenderPassBuilder &WriteTexture(const std::string &name,
                                     uint32_t width, uint32_t height,
                                     RenderPassResource::Format format,
-                                    TextureUsage state = TextureUsage::RenderTarget,
-                                    PipelineStage stage = PipelineStage::RenderTarget);
+                                    TextureUsage state, PipelineStage stage);
 
     RenderPassBuilder &ReadWriteTexture(const std::string &name, uint32_t width, uint32_t height,
                                         RenderPassResource::Format format,
-                                        TextureUsage state = TextureUsage::UnorderedAccess,
-                                        PipelineStage stage = PipelineStage::ComputeShader);
+                                        TextureUsage state, PipelineStage stage);
 
-    RenderPassBuilder &ReadBuffer(const std::string &name, BufferUsage state = BufferUsage::UnorderedAccess,
-                                  PipelineStage stage = PipelineStage::ComputeShader);
+    RenderPassBuilder &ReadBuffer(const std::string &name, BufferUsage state, PipelineStage stage);
 
     RenderPassBuilder &WriteBuffer(const std::string &name, uint64_t size,
-                                   BufferUsage state = BufferUsage::UnorderedAccess,
-                                   PipelineStage stage = PipelineStage::ComputeShader);
+                                   BufferUsage state, PipelineStage stage);
 
     RenderPassBuilder &Execute(RenderPassExecuteFunc func);
 

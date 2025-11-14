@@ -13,7 +13,9 @@ class D3D12Pipeline : public Pipeline {
 public:
     ~D3D12Pipeline() = default;
 
-    void *GetNativeHandle() const override;
+private:
+    friend class D3D12Device;
+    friend class D3D12CommandList;
 
     ComPtr<ID3D12PipelineState> pso;
     ComPtr<ID3D12RootSignature> rootSignature;

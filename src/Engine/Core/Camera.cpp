@@ -7,9 +7,11 @@
 #include <cmath>
 #include <cstring>
 #include <glm/ext/matrix_clip_space.hpp>
+#include <glm/ext/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 Camera::Camera(Transform transform, float aspectRatio, float fov, float zNear, float zFar) : m_transform(transform),
-    m_aspectRatio(aspectRatio), m_zNear(zNear), m_zFar(zFar), m_fov(fov) {
+                                                                                             m_aspectRatio(aspectRatio), m_zNear(zNear), m_zFar(zFar), m_fov(fov) {
 }
 
 void Camera::Update() {
@@ -68,6 +70,13 @@ void Camera::SetZFar(float far) {
 glm::mat4x4 Camera::GetPerspective() {
     if (m_updatePerspective) CalculatePerspectiveMatrix();
     return m_perspectiveMat;
+}
+
+glm::mat4x4 Camera::GetViewMatrix() {
+    glm::quat rotation = glm::quat(m_transform.GetRotation());
+    glm::mat4 cameraTransform = glm::translate(glm::mat4(1.0f), m_transform.GetPosition()) * glm::mat4_cast(rotation);
+    glm::mat4 view = glm::inverse(cameraTransform);
+    return view;
 }
 
 void Camera::CalculatePerspectiveMatrix() {

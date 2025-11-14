@@ -6,13 +6,10 @@
 #include <algorithm>
 #include <stdexcept>
 
-// ===== RenderPassContext Implementation =====
-
+// TODO: Implement this
 Texture *RenderPassContext::GetTexture(const std::string &name) const {
     // Search in input textures
     for (auto *texture: inputTextures) {
-        // Note: Would need name stored in Texture class
-        // For now, return first texture as placeholder
         return texture;
     }
 
@@ -24,6 +21,7 @@ Texture *RenderPassContext::GetTexture(const std::string &name) const {
     return nullptr;
 }
 
+// TODO: Implement this
 Buffer *RenderPassContext::GetBuffer(const std::string &name) const {
     // Similar implementation as GetTexture
     for (auto *buffer: inputBuffers) {
@@ -36,8 +34,6 @@ Buffer *RenderPassContext::GetBuffer(const std::string &name) const {
 
     return nullptr;
 }
-
-// ===== RenderPass Implementation =====
 
 RenderPass::RenderPass(const std::string &name)
     : m_name(name)
@@ -72,8 +68,6 @@ void RenderPass::Execute(RenderPassContext &context) {
 
     m_executeFunc(context);
 }
-
-// ===== RenderPassBuilder Implementation =====
 
 RenderPassBuilder::RenderPassBuilder(const std::string &name)
     : m_pass(std::make_unique<RenderPass>(name)) {

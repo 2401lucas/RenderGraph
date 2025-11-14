@@ -59,6 +59,7 @@ private:
     } entity;
 
     std::unique_ptr<Camera> m_camera;
+    float m_speed = 1.0f;
 };
 
 

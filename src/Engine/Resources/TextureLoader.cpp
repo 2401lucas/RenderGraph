@@ -148,18 +148,22 @@ TextureData TextureLoader::LoadJPG(const std::string &path) {
 }
 
 TextureData TextureLoader::LoadDDS(const std::string &path) {
-    // DDS is more complex, supports compression and mipmaps
+    //TODO: Implement
     throw std::runtime_error("DDS loading not implemented");
 }
 
 TextureData TextureLoader::LoadHDR(const std::string &path) {
-    // HDR uses float data, use stb_image for this too
+    //TODO: Implement
     throw std::runtime_error("HDR loading requires stb_image library");
 }
 
 void TextureLoader::GenerateMipmaps(TextureData &texture) {
     // Simple box filter mipmap generation
-    // For production, use better filtering
+    // TODO: use better filtering
+    //  Full mipmap generation would require:
+    //  1. Allocating space for all mip levels
+    //  2. Downsampling each level using proper filtering
+    //  3. Storing in the data array with proper offsets
 
     uint32_t width = texture.width;
     uint32_t height = texture.height;
@@ -175,12 +179,6 @@ void TextureLoader::GenerateMipmaps(TextureData &texture) {
     }
 
     texture.mipLevels = mipLevels;
-
-    // TODO: Full mipmap generation would require:
-    // 1. Allocating space for all mip levels
-    // 2. Downsampling each level using proper filtering
-    // 3. Storing in the data array with proper offsets
-    // This is simplified for demonstration
 }
 
 TextureData TextureLoader::CreateSolidColor(uint32_t width, uint32_t height,
@@ -204,6 +202,7 @@ TextureData TextureLoader::CreateSolidColor(uint32_t width, uint32_t height,
     return texture;
 }
 
+// used to create a checkerboard pattern image
 TextureData TextureLoader::CreateCheckerboard(uint32_t width, uint32_t height,
                                               uint32_t checkerSize) {
     TextureData texture;
@@ -220,11 +219,10 @@ TextureData TextureLoader::CreateCheckerboard(uint32_t width, uint32_t height,
             size_t index = (y * width + x) * 4;
 
             bool checker = ((x / checkerSize) + (y / checkerSize)) % 2 == 0;
-            uint8_t color = checker ? 255 : 64;
 
-            texture.data[index + 0] = color;
-            texture.data[index + 1] = color;
-            texture.data[index + 2] = color;
+            texture.data[index + 0] = checker ? 0 : 255;
+            texture.data[index + 1] = 0;
+            texture.data[index + 2] = checker ? 0 : 220;
             texture.data[index + 3] = 255;
         }
     }

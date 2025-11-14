@@ -16,12 +16,10 @@
 // --- Include Windows and DirectX safely ---
 #include <Windows.h>
 #include <wrl/client.h>
-#include <dxgi1_6.h>
 #include <DirectX/d3d12.h>
-#include <DirectXMath.h>
-
-// --- Include D3DX12 helper (from directx-headers or vcpkg) ---
 #include <DirectX/d3dx12.h>
+#include <dxgi1_6.h>
+#include <DirectXMath.h>
 
 // --- Common namespaces ---
 using Microsoft::WRL::ComPtr;

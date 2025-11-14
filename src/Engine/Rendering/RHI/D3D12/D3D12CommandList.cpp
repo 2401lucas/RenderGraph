@@ -8,7 +8,7 @@
 #include "D3D12Pipeline.h"
 #include <stdexcept>
 
-void D3D12CommandList::Begin() {
+void D3D12CommandList::Begin(BindlessDescriptorManager *bindlessManager) {
     if (m_isRecording) {
         throw std::runtime_error("CommandList::Begin() called while already recording");
     }
@@ -21,10 +21,12 @@ void D3D12CommandList::Begin() {
         throw std::runtime_error("CommandList not initialized");
     }
 
-    // Begin recording - DON'T reset allocator here!
-    // The allocator should already be reset by CommandQueue::BeginFrame
     DX_CHECK(m_cmdList->Reset(m_allocator, nullptr));
     m_isRecording = true;
+
+    if (bindlessManager) {
+        BindBindlessDescriptorHeaps((D3D12BindlessDescriptorManager *) bindlessManager);
+    }
 }
 
 void D3D12CommandList::End() {
@@ -34,24 +36,6 @@ void D3D12CommandList::End() {
 
     DX_CHECK(m_cmdList->Close());
     m_isRecording = false;
-}
-
-void D3D12CommandList::Reset() {
-    // This should NOT be called directly by user code
-    // It's only here for legacy compatibility
-    // CommandQueue::BeginFrame should handle resetting
-    if (m_isRecording) {
-        throw std::runtime_error("Cannot reset CommandList while recording");
-    }
-
-    if (!m_allocator) {
-        throw std::runtime_error("CommandList has no allocator assigned");
-    }
-
-    // CRITICAL: Only reset allocator if GPU is done with it
-    // This should be guaranteed by the caller (CommandQueue)
-    DX_CHECK(m_allocator->Reset());
-    DX_CHECK(m_cmdList->Reset(m_allocator, nullptr));
 }
 
 void D3D12CommandList::SetPipeline(Pipeline *pipeline) {
@@ -154,16 +138,17 @@ void D3D12CommandList::SetIndexBuffer(Buffer *buffer) {
     m_cmdList->IASetIndexBuffer(&ibv);
 }
 
-void D3D12CommandList::SetConstantBuffer(Buffer *buffer, uint32_t slot) {
+void D3D12CommandList::SetConstantBuffer(Buffer *buffer, uint32_t slot, uint32_t offset) {
     if (!buffer || !m_isRecording) return;
 
     D3D12Buffer *cb = static_cast<D3D12Buffer *>(buffer);
 
+    D3D12_GPU_VIRTUAL_ADDRESS gpuAddress = cb->resource->GetGPUVirtualAddress() + offset;
     // Set as root CBV (assumes root signature layout matches)
     if (m_commandListType == D3D12_COMMAND_LIST_TYPE_COMPUTE) {
-        m_cmdList->SetComputeRootConstantBufferView(slot, cb->resource->GetGPUVirtualAddress());
+        m_cmdList->SetComputeRootConstantBufferView(slot, gpuAddress);
     } else {
-        m_cmdList->SetGraphicsRootConstantBufferView(slot, cb->resource->GetGPUVirtualAddress());
+        m_cmdList->SetGraphicsRootConstantBufferView(slot, gpuAddress);
     }
 }
 
@@ -178,11 +163,11 @@ void D3D12CommandList::SetTexture(Texture *texture, uint32_t slot) {
     // 3. Valid GPU descriptor handles
 
     // This is a simplified implementation assuming descriptor table at slot
-    if (tex->srvHandle.ptr != 0) {
+    if (tex->srvHandle.IsValid()) {
         if (m_commandListType == D3D12_COMMAND_LIST_TYPE_COMPUTE) {
-           // m_cmdList->SetComputeRootDescriptorTable(slot, tex->srvHandle);
+            // m_cmdList->SetComputeRootDescriptorTable(slot, tex->srvHandle.index);
         } else {
-          //  m_cmdList->SetGraphicsRootDescriptorTable(slot, tex->srvHandle);
+            // m_cmdList->SetGraphicsRootDescriptorTable(slot, tex->srvHandle);
         }
     }
 }
@@ -320,6 +305,50 @@ void D3D12CommandList::SetRenderTargets(Texture **renderTargets, uint32_t count,
     }
 
     m_cmdList->OMSetRenderTargets(count, count > 0 ? rtvHandles : nullptr, FALSE, dsvHandle);
+}
+
+void D3D12CommandList::BindBindlessDescriptorHeaps(
+    D3D12BindlessDescriptorManager *manager) {
+    if (!m_isRecording || !manager) return;
+    m_currentRootSignature = manager->GetRootSignature();
+    // STEP 1: Set root signature FIRST!
+    if (m_commandListType == D3D12_COMMAND_LIST_TYPE_COMPUTE) {
+        m_cmdList->SetComputeRootSignature(m_currentRootSignature);
+    } else {
+        m_cmdList->SetGraphicsRootSignature(m_currentRootSignature);
+    }
+
+
+    // STEP 2: Bind descriptor heaps (only 2 heaps - this is the D3D12 limit!)
+    ID3D12DescriptorHeap *heaps[] = {
+        manager->GetResourceHeap(), // Single CBV_SRV_UAV heap
+        manager->GetSamplerHeap() // Sampler heap
+    };
+    m_cmdList->SetDescriptorHeaps(2, heaps);
+
+    // STEP 3: Set descriptor tables
+    // SRV table points to start of heap (index 0)
+    // UAV table points to offset UAV_HEAP_START in same heap
+    // Sampler table points to sampler heap start
+
+    D3D12_GPU_DESCRIPTOR_HANDLE srvHeapStart = manager->GetSRVHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE uavHeapStart = manager->GetUAVHeapStart();
+    D3D12_GPU_DESCRIPTOR_HANDLE samplerHeapStart = manager->GetSamplerHeapStart();
+
+    if (m_commandListType == D3D12_COMMAND_LIST_TYPE_COMPUTE) {
+        m_cmdList->SetComputeRootDescriptorTable(0, srvHeapStart); // SRVs at indices 0+
+        m_cmdList->SetComputeRootDescriptorTable(1, uavHeapStart); // UAVs at indices 0+ (offset in heap)
+        m_cmdList->SetComputeRootDescriptorTable(2, samplerHeapStart); // Samplers
+    } else {
+        m_cmdList->SetGraphicsRootDescriptorTable(0, srvHeapStart); // SRVs at indices 0+
+        m_cmdList->SetGraphicsRootDescriptorTable(1, uavHeapStart); // UAVs at indices 0+ (offset in heap)
+        m_cmdList->SetGraphicsRootDescriptorTable(2, samplerHeapStart); // Samplers
+    }
+}
+
+void D3D12CommandList::SetBindlessResource(uint32_t resourceIndex, uint32_t rootParameterIndex) {
+    // TODO: Implement
+    throw std::exception("SetBindlessResource not implemented");
 }
 
 void D3D12CommandList::CopyBuffer(Buffer *src, Buffer *dst, uint64_t size) {

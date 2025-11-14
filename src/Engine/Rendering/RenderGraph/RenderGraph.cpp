@@ -39,8 +39,6 @@ RenderGraph::~RenderGraph() {
     Clear();
 }
 
-// ===== Pass Management =====
-
 void RenderGraph::AddPass(std::unique_ptr<RenderPass> pass) {
     if (!pass) {
         throw std::runtime_error("Cannot add null pass to RenderGraph");
@@ -55,29 +53,22 @@ void RenderGraph::Clear() {
     m_dependencies.clear();
 }
 
-// ===== Execution =====
-
 CommandList *RenderGraph::Execute() {
     auto startTime = std::chrono::high_resolution_clock::now();
 
     CommandList *commandList = m_commandLists[m_currentFrameIndex].get();
-    commandList->Begin();
+    commandList->Begin(m_device->GetBindlessManager());
 
     m_statistics.barrierCount = 0;
 
-    // 1. Build dependency graph
     BuildDependencyGraph();
 
-    // 2. Sort passes topologically
     TopologicalSort();
 
-    // 3. Allocate transient resources for this frame
     AllocateResources();
 
-    // 4. Calculate resource lifetimes
     CalculateResourceLifetimes();
 
-    // 5. Alias resources if enabled
     if (m_resourceAliasing) {
         AliasResources();
     }
@@ -86,11 +77,6 @@ CommandList *RenderGraph::Execute() {
     m_statistics.compileTime = std::chrono::duration<float, std::milli>(
         compileTime - startTime).count();
 
-#if defined(_DEBUG)
-    LogRenderGraph();
-#endif
-
-    // 6. Execute passes
     for (size_t i = 0; i < m_compiledPasses.size(); i++) {
         const auto &compiledPass = m_compiledPasses[i];
 
@@ -98,16 +84,13 @@ CommandList *RenderGraph::Execute() {
             continue;
         }
 
-        // Insert barriers before pass
         if (m_autoBarriers) {
             InsertBarriers(static_cast<uint32_t>(i));
         }
 
-        // Execute the pass
         ExecutePass(compiledPass);
     }
 
-    // Transition present target if specified
     if (!m_presentTarget.empty()) {
         auto it = m_externalResources.find(m_presentTarget);
         if (it != m_externalResources.end() && it->second.type == ExternalResource::Type::Texture) {
@@ -122,6 +105,9 @@ CommandList *RenderGraph::Execute() {
         executeTime - compileTime).count();
 
     UpdateStatistics();
+#if defined(DEBUG_RENDERGRAPH)
+    //LogRenderGraph();
+#endif
 
     return commandList;
 }
@@ -134,15 +120,10 @@ void RenderGraph::NextFrame() {
         resource.canBeDestroyed = true;
     }
 
-    // Clean up resources from frames that are definitely finished
-    // (i.e., resources that haven't been used in m_frameCount frames)
     CleanupOldResources();
 }
 
 void RenderGraph::Flush() {
-    m_device->WaitIdle();
-
-    // Now safe to destroy all transient resources
     for (auto &frameRes: m_frameResources) {
         for (auto &[name, resource]: frameRes.resources) {
             if (resource.texture) {
@@ -158,12 +139,10 @@ void RenderGraph::Flush() {
     }
 }
 
-// ===== Compilation: Dependency Analysis =====
-
 void RenderGraph::BuildDependencyGraph() {
     m_dependencies.clear();
 
-    // Build map of resource producers (passes that write resources)
+    // Build map of resource producers
     std::unordered_map<std::string, RenderPass *> producers;
 
     for (auto &pass: m_passes) {
@@ -172,7 +151,7 @@ void RenderGraph::BuildDependencyGraph() {
         }
     }
 
-    // Find dependencies: if pass reads a resource, it depends on the pass that writes it
+    // Find dependencies
     for (auto &pass: m_passes) {
         for (const auto &input: pass->GetInputs()) {
             auto it = producers.find(input.name);
@@ -247,8 +226,6 @@ void RenderGraph::TopologicalSort() {
         throw std::runtime_error("RenderGraph contains circular dependencies!");
     }
 }
-
-// ===== Resource Management =====
 
 void RenderGraph::CleanupOldResources() {
     // Resources can be destroyed if they haven't been used in m_frameCount frames
@@ -375,35 +352,11 @@ void RenderGraph::CalculateResourceLifetimes() {
     }
 }
 
+// TODO: Implement
 void RenderGraph::AliasResources() {
     // Find resources with non-overlapping lifetimes that could share memory
-    // This is a simplified version - real implementation would be more sophisticated
-
-    // std::vector<TransientResource *> textures;
-    // for (auto &[name, resource]: m_transientResources) {
-    //     if (resource.type == TransientResource::Type::Texture) {
-    //         textures.push_back(&resource);
-    //     }
-    // }
-    //
-    // // Sort by first use
-    // std::sort(textures.begin(), textures.end(),
-    //           [](const TransientResource *a, const TransientResource *b) {
-    //               return a->firstUse < b->firstUse;
-    //           });
-    //
-    // // Try to alias resources
-    // for (size_t i = 0; i < textures.size(); i++) {
-    //     for (size_t j = i + 1; j < textures.size(); j++) {
-    //         // Check if lifetimes don't overlap
-    //         if (textures[i]->lastUse < textures[j]->firstUse) {
-    //             // TODO  alias these resources
-    //         }
-    //     }
-    // }
 }
 
-// ===== Barrier Insertion =====
 // TODO: Barriers for Buffers?
 void RenderGraph::InsertBarriers(uint32_t passIndex) {
     CommandList *commandList = m_commandLists[m_currentFrameIndex].get();
@@ -510,13 +463,9 @@ void RenderGraph::TransitionExternalResource(const std::string &name, uint32_t n
     m_statistics.barrierCount++;
 }
 
-// ===== Execution =====
-
 void RenderGraph::ExecutePass(const CompiledPass &compiledPass) {
-    // Build context for this pass
     RenderPassContext context = BuildPassContext(compiledPass);
 
-    // Execute the pass
     compiledPass.pass->Execute(context);
 }
 
@@ -557,8 +506,6 @@ RenderPassContext RenderGraph::BuildPassContext(const CompiledPass &compiledPass
     return context;
 }
 
-// ===== External Resources =====
-
 void RenderGraph::RegisterExternalTexture(const std::string &name, Texture *texture,
                                           TextureUsage initialState) {
     ExternalResource resource;
@@ -591,9 +538,6 @@ void RenderGraph::SetPresentTarget(const std::string &name) {
         it->second.isPresentTarget = true;
     }
 }
-
-
-// ===== Helpers =====
 
 bool RenderGraph::IsExternalResource(const std::string &name) const {
     return m_externalResources.find(name) != m_externalResources.end();
@@ -683,7 +627,6 @@ void RenderGraph::UpdateStatistics() {
     m_statistics.passCount = static_cast<uint32_t>(m_compiledPasses.size());
     m_statistics.transientResourceCount = static_cast<uint32_t>(m_frameResources[m_currentFrameIndex].resources.size());
 
-    // Calculate memory usage
     uint64_t memoryUsed = 0;
     for (const auto &[name, resource]: m_frameResources[m_currentFrameIndex].resources) {
         if (resource.type == TransientResource::Type::Texture) {

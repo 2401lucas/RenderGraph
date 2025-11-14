@@ -8,10 +8,9 @@
 #include <memory>
 #include <cstdint>
 
+#include "BindlessDescriptorManager.h"
 #include "Swapchain.h"
 #include "CommandQueue.h"
-
-class Shader;
 
 struct DeviceCreateInfo {
     bool enableDebugLayer = false;
@@ -29,7 +28,7 @@ public:
 
     virtual ~Device() = default;
 
-    // ===== Factory Methods =====
+    // Creation Factory
 
     virtual CommandQueue *CreateCommandQueue(const CommandQueueCreateInfo &createInfo) = 0;
 
@@ -43,11 +42,13 @@ public:
 
     virtual Pipeline *CreatePipeline(const PipelineCreateInfo &desc) = 0;
 
-    // ===== Resource Management =====
+    // Resource Management
 
     virtual void UploadBufferData(Buffer *buffer, const void *data, size_t size) = 0;
 
     virtual void UploadTextureData(Texture *texture, const void *data, size_t size) = 0;
+
+    virtual void FlushUploads() = 0;
 
     virtual void DestroyBuffer(Buffer *buffer) = 0;
 
@@ -55,7 +56,7 @@ public:
 
     virtual void DestroyPipeline(Pipeline *pipeline) = 0;
 
-    // ===== Device Capabilities =====
+    // Device Queries
 
     virtual bool SupportsRayTracing() const = 0;
 
@@ -63,7 +64,9 @@ public:
 
     virtual uint64_t GetVideoMemoryBudget() const = 0;
 
-    // ===== Synchronization =====
+    virtual BindlessDescriptorManager *GetBindlessManager() const = 0;
+
+    // Sync
 
     virtual void WaitIdle() = 0;
 };

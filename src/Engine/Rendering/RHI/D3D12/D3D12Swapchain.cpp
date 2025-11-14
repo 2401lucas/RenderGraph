@@ -4,8 +4,6 @@
 
 #include "D3D12Swapchain.h"
 
-#include "D3D12Texture.h"
-
 SwapchainPresentResult D3D12Swapchain::Present(bool vsync) {
     m_swapchain->Present(vsync ? 1 : 0, 0);
     m_frameIndex = m_swapchain->GetCurrentBackBufferIndex();
@@ -26,11 +24,10 @@ void D3D12Swapchain::Resize(uint32_t width, uint32_t height) {
     for (UINT i = 0; i < FrameCount; ++i) {
         m_swapchain->GetBuffer(i, IID_PPV_ARGS(&m_backBuffers[i]));
         m_device->CreateRenderTargetView(m_backBuffers[i].Get(), nullptr, rtvHandle);
-        rtvHandle.Offset(1, m_rtvDescriptorSize);
-        m_backBufferTextureWrappers[i]->resource = m_backBuffers[i].Get();
+        m_backBufferTextureWrappers[i]->resource = m_backBuffers[i];
         m_backBufferTextureWrappers[i]->rtvHandle = rtvHandle;
+        rtvHandle.Offset(1, m_rtvDescriptorSize);
     }
-
     m_frameIndex = m_swapchain->GetCurrentBackBufferIndex();
 }
 

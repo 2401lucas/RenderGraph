@@ -129,8 +129,6 @@ public:
 
     CommandList *CreateCommandList(QueueType queueType) override;
 
-    CommandList *CreateCommandListWithAllocator(QueueType queueType, ID3D12CommandAllocator *allocator);
-
     Swapchain *CreateSwapchain(void *windowHandle, CommandQueue *queue, uint32_t width, uint32_t height) override;
 
     CommandQueue *CreateCommandQueue(const CommandQueueCreateInfo &createInfo) override;
@@ -157,6 +155,8 @@ public:
 
     uint64_t GetVideoMemoryBudget() const override;
 
+    void FlushUploads() override;
+
     void WaitIdle() override;
 
     // D3D12-specific access
@@ -170,36 +170,45 @@ public:
 
     UploadBufferAllocator *GetUploadAllocator() { return m_uploadAllocator.get(); }
 
+    BindlessDescriptorManager *GetBindlessManager() const override { return m_bindlessManager.get(); }
+
 private:
     ComPtr<ID3D12Device> m_device;
     ComPtr<IDXGIAdapter4> m_adapter;
     ComPtr<ID3D12RootSignature> m_graphicsRootSignature;
     ComPtr<ID3D12RootSignature> m_computeRootSignature;
+    std::unique_ptr<D3D12CommandQueue> m_uploadCommandQueue;
+    std::unique_ptr<D3D12CommandList> m_uploadCommandList;
 
-    // Synchronization primitives
+    struct PendingUpload {
+        uint64_t fenceValue;
+        ComPtr<ID3D12CommandAllocator> allocator;
+    };
+
+    std::queue<PendingUpload> m_pendingUploads;
+
     ComPtr<ID3D12Fence> m_fence;
     UINT64 m_fenceValue = 0;
     HANDLE m_fenceEvent = nullptr;
 
-    // Descriptor heaps
+    std::unique_ptr<D3D12BindlessDescriptorManager> m_bindlessManager;
+    ComPtr<ID3D12RootSignature> m_bindlessRootSignature;
+
     std::unique_ptr<DescriptorHeapAllocator> m_rtvHeap;
     std::unique_ptr<DescriptorHeapAllocator> m_dsvHeap;
     std::unique_ptr<DescriptorHeapAllocator> m_cbvSrvUavHeap;
     std::unique_ptr<DescriptorHeapAllocator> m_samplerHeap;
 
-    // Command allocator pools
     std::unique_ptr<CommandAllocatorPool> m_directAllocatorPool;
     std::unique_ptr<CommandAllocatorPool> m_computeAllocatorPool;
     std::unique_ptr<CommandAllocatorPool> m_copyAllocatorPool;
 
-    // Upload buffer allocator
     std::unique_ptr<UploadBufferAllocator> m_uploadAllocator;
 
-    // Resource state tracker
     ResourceStateTracker m_stateTracker;
 
     // Helper methods
-    ComPtr<ID3DBlob> GetShaderBlob(const Shader &shader);
+    static ComPtr<ID3DBlob> GetShaderBlob(const Shader &shader);
 
     void InitializeSynchronization();
 
@@ -209,9 +218,15 @@ private:
 
     void WaitForFenceValue(UINT64 value);
 
+    ComPtr<ID3D12RootSignature> CreateBindlessRootSignature();
+
     ComPtr<ID3D12RootSignature> CreateDefaultGraphicsRootSignature();
 
     ComPtr<ID3D12RootSignature> CreateDefaultComputeRootSignature();
+
+    ComPtr<ID3D12RootSignature> CreateFallbackRootSignature();
+
+    void CheckBindlessSupport();
 
     static std::string ShaderTargetToString(ShaderStage stage);
 

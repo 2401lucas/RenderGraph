@@ -20,12 +20,12 @@ public:
     }
 
     ~Engine() {
+        m_renderer.reset(); // Delete First
     }
 
     void Initialize(std::unique_ptr<Application>, const int width, const int height);
 
     void Run();
-
 
     Renderer &GetRenderer() { return *m_renderer; }
     InputManager &GetInput() { return *m_input; }

@@ -36,7 +36,7 @@ struct TextureCreateInfo {
     uint32_t width;
     uint32_t height;
     uint32_t depth = 1;
-    uint32_t mipLevels = 1;
+    uint16_t mipLevels = 1;
     uint32_t arraySize = 1;
     TextureFormat format;
     TextureUsage usage;
@@ -46,6 +46,8 @@ struct TextureCreateInfo {
 class Texture {
 public:
     virtual ~Texture() = default;
+
+    virtual uint32_t GetBindlessIndex() const = 0;
 
     uint32_t width = 0;
     uint32_t height = 0;

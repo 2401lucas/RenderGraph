@@ -9,16 +9,12 @@ class Fence {
     public:
     virtual ~Fence() = default;
 
-    /// Signal the fence from the GPU
     virtual void Signal(CommandQueue* queue, uint64_t value) = 0;
 
-    /// CPU wait until fence reaches `value`
     virtual void WaitCPU(uint64_t value) = 0;
 
-    /// Check current completed fence value
     virtual uint64_t GetCompletedValue() const = 0;
 
-    /// Reset fence to initial value (optional)
     virtual void Reset(uint64_t value = 0) = 0;
 };
 

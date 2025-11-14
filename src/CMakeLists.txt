@@ -22,8 +22,7 @@ file(GLOB_RECURSE SOURCE_FILES
 )
 
 
-add_executable(GPU_Particle_Sim ${SOURCE_FILES}
-        Engine/Rendering/RHI/D3D12/D3D12Common.h)
+add_executable(GPU_Particle_Sim ${SOURCE_FILES})
 
 # Add include directories (for internal headers)
 target_include_directories(GPU_Particle_Sim PRIVATE "Engine/")
@@ -38,6 +37,7 @@ target_link_libraries(GPU_Particle_Sim PRIVATE Microsoft::DirectX-Headers)
 target_link_libraries(GPU_Particle_Sim PRIVATE nlohmann_json::nlohmann_json)
 target_link_libraries(GPU_Particle_Sim PUBLIC glfw)
 
+#target_compile_definitions(GPU_Particle_Sim PUBLIC DEBUG_RENDERGRAPH)
 target_compile_definitions(GPU_Particle_Sim PUBLIC DEBUG_EVENTS)
 target_compile_definitions(GPU_Particle_Sim PUBLIC RHI_D3D12)
 # target_compile_definitions(GPU_Particle_Sim PUBLIC RHI_VULKAN)

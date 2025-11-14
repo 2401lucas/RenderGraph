@@ -117,8 +117,6 @@ struct PipelineCreateInfo {
 class Pipeline {
 public:
     virtual ~Pipeline() = default;
-
-    virtual void *GetNativeHandle() const = 0;
 };
 
 #endif //GPU_PARTICLE_SIM_PIPELINE_H

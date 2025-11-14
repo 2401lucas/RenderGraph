@@ -32,14 +32,19 @@ void Engine::Initialize(std::unique_ptr<Application> app, const int width, const
 }
 
 void Engine::Run() {
-    auto lastTime = std::chrono::high_resolution_clock::now();
-    std::chrono::time_point<std::chrono::high_resolution_clock> now;
+    auto lastTime = std::chrono::steady_clock::now();
+    std::chrono::time_point<std::chrono::steady_clock> now;
 
     while (!m_window->shouldClose()) {
         // Time management
-        now = std::chrono::high_resolution_clock::now();
-        m_deltaTime = (now - lastTime).count();
+        now = std::chrono::steady_clock::now();
+        m_deltaTime = std::chrono::duration<float>(now - lastTime).count();;
         lastTime = now;
+
+
+        if (m_window->wasResized()) {
+            m_renderer->Resize();
+        }
 
         // Input
         Window::PollAllEvents();

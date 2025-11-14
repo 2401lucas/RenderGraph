@@ -9,8 +9,8 @@
 
 #include "Buffer.h"
 #include "Pipeline.h"
-#include "Resource.h"
 #include "Texture.h"
+#include "BindlessDescriptorManager.h"
 
 struct Viewport {
     float x, y;
@@ -27,16 +27,11 @@ class CommandList {
 public:
     virtual ~CommandList() = default;
 
-    // ===== Command List Lifecycle =====
-
-    virtual void Begin() = 0;
+    virtual void Begin(BindlessDescriptorManager *bindlessManager = nullptr) = 0;
 
     virtual void End() = 0;
 
-    virtual void Reset() = 0;
-
-    // ===== Pipeline State =====
-
+    // Pipeline State
     virtual void SetPipeline(Pipeline *pipeline) = 0;
 
     virtual void SetViewport(const Viewport &viewport) = 0;
@@ -45,18 +40,16 @@ public:
 
     virtual void SetPrimitiveTopology(PrimitiveTopology topology) = 0;
 
-    // ===== Resource Binding =====
-
+    // Resource Binding
     virtual void SetVertexBuffer(Buffer *buffer, uint32_t slot = 0) = 0;
 
     virtual void SetIndexBuffer(Buffer *buffer) = 0;
 
-    virtual void SetConstantBuffer(Buffer *buffer, uint32_t slot) = 0;
+    virtual void SetConstantBuffer(Buffer *buffer, uint32_t slot, uint32_t offset) = 0;
 
     virtual void SetTexture(Texture *texture, uint32_t slot) = 0;
 
-    // ===== Draw Commands =====
-
+    // Draw Commands
     virtual void Draw(uint32_t vertexCount, uint32_t startVertex = 0) = 0;
 
     virtual void DrawIndexed(uint32_t indexCount, uint32_t startIndex = 0) = 0;
@@ -65,11 +58,11 @@ public:
 
     virtual void DrawIndexedInstanced(uint32_t indexCount, uint32_t instanceCount) = 0;
 
-    // ===== Compute =====
+    // Compute
 
     virtual void Dispatch(uint32_t groupsX, uint32_t groupsY, uint32_t groupsZ) = 0;
 
-    // ===== Clear/Copy =====
+    // Clear/Copy
 
     virtual void ClearRenderTarget(Texture *texture, const float color[4]) = 0;
 
@@ -81,7 +74,7 @@ public:
 
     virtual void CopyBufferToTexture(Buffer *src, Texture *dst) = 0;
 
-    // ===== Resource Barriers (State Transitions) =====
+    // Resource Barriers
     virtual void TransitionTexture(Texture *texture,
                                    TextureUsage oldState,
                                    TextureUsage newState) = 0;
@@ -90,8 +83,7 @@ public:
                                   BufferUsage oldState,
                                   BufferUsage newState) = 0;
 
-    // ===== Render Targets =====
-
+    // Render Targets
     virtual void SetRenderTarget(Texture *renderTarget, Texture *depthStencil = nullptr) = 0;
 
     virtual void SetRenderTargets(Texture **renderTargets, uint32_t count,

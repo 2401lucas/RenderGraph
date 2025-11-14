@@ -7,7 +7,6 @@
 
 
 #include "ResourceHandle.h"
-#include <string>
 
 struct MaterialProperties {
     float baseColor[4] = {1, 1, 1, 1};
@@ -19,9 +18,11 @@ struct MaterialProperties {
 
 class Material {
 public:
-    Material();
+    Material() {
+    }
 
-    ~Material();
+    ~Material() {
+    }
 
     // Textures
     void SetAlbedoTexture(TextureHandle texture) { m_albedoTexture = texture; }
@@ -38,17 +39,11 @@ public:
     MaterialProperties &GetProperties() { return m_properties; }
     const MaterialProperties &GetProperties() const { return m_properties; }
 
-    // TODO: GET SHADER/PIPELINE INFO
-    // Shader
-    // void SetShader(ShaderHandle shader) { m_shader = shader; }
-    // ShaderHandle GetShader() const { return m_shader; }
-
 private:
     TextureHandle m_albedoTexture;
     TextureHandle m_normalTexture;
     TextureHandle m_metallicRoughnessTexture;
     TextureHandle m_emissiveTexture;
-    // ShaderHandle m_shader;
     MaterialProperties m_properties;
 };
 

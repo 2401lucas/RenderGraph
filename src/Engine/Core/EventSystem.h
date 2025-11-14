@@ -11,11 +11,10 @@
 #include <string>
 #include <any>
 #include <stdexcept>
-#include <memory>
 
 /// <summary>
 /// Event data container that can hold arbitrary data.
-/// Use this to pass parameters with events.
+/// Can pass parameters with events.
 /// </summary>
 struct EventData {
     std::unordered_map<std::string, std::any> data;
@@ -53,7 +52,6 @@ struct EventData {
     }
 };
 
-// Type alias for event callback function
 using EventCallback = std::function<void(const EventData &)>;
 
 /// <summary>
@@ -74,8 +72,6 @@ public:
     EventSystem();
 
     ~EventSystem();
-
-    // ===== Subscribing to Events =====
 
     /// <summary>
     /// Subscribe to an event type with a callback.
@@ -98,8 +94,6 @@ public:
     /// <param name="eventType">Event type to clear listeners for</param>
     void UnsubscribeAll(const std::string &eventType);
 
-    // ===== Emitting Events =====
-
     /// <summary>
     /// Emit an event immediately (synchronous).
     /// All subscribed callbacks are invoked immediately.
@@ -121,8 +115,6 @@ public:
     /// Call this once per frame at an appropriate time.
     /// </summary>
     void ProcessQueued();
-
-    // ===== Utility =====
 
     /// <summary>
     /// Clear all event subscriptions and queued events.
@@ -150,7 +142,6 @@ private:
     uint64_t m_nextHandleId = 1;
 };
 
-// ===== Common Event Type Constants =====
 // Define common events used across the engine here
 
 namespace Events {

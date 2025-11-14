@@ -33,8 +33,6 @@ public:
 
     ~RenderGraph();
 
-    // ===== Pass Management =====
-
     /// <summary>
     /// Add a render pass to the graph.
     /// Passes are executed in the order determined by dependencies.
@@ -46,8 +44,6 @@ public:
     /// Called at the start of each frame setup.
     /// </summary>
     void Clear();
-
-    // ===== Execution =====
 
     /// <summary>
     /// Compile and execute the render graph for the current frame.
@@ -73,8 +69,6 @@ public:
     /// </summary>
     void Flush();
 
-    // ===== Resource Management =====
-
     /// <summary>
     /// Register an external texture with initial state.
     /// Example: swap chain back buffer
@@ -93,12 +87,8 @@ public:
     /// </summary>
     void SetPresentTarget(const std::string &name);
 
-    // ===== Configuration =====
-
     void SetAutoBarriers(bool enable) { m_autoBarriers = enable; }
     void SetResourceAliasing(bool enable) { m_resourceAliasing = enable; }
-
-    // ===== Statistics =====
 
     struct Statistics {
         uint32_t passCount = 0;
@@ -113,7 +103,6 @@ public:
     uint32_t GetCurrentFrameIndex() const { return m_currentFrameIndex; }
 
 private:
-    // ===== Internal Structures =====
     /// <summary>
     /// Transient resource managed by the RenderGraph.
     /// Created and destroyed automatically based on pass requirements.
@@ -139,9 +128,8 @@ private:
         uint32_t firstUse = UINT32_MAX;
         uint32_t lastUse = 0;
 
-        // State tracking
         uint32_t currentStateFlag = 0;
-        uint32_t initialStateFlag = 0; // State at creation
+        uint32_t initialStateFlag = 0;
 
         // Frame tracking - resource valid for this many frames after last use
         uint32_t lastUsedFrame = 0;
@@ -192,8 +180,6 @@ private:
         std::vector<std::string> outputResourceNames;
     };
 
-    // ===== Core Components =====
-
     Device *m_device;
     CommandQueue *m_commandQueue;
 
@@ -218,16 +204,11 @@ private:
     bool m_autoBarriers = true;
     bool m_resourceAliasing = false;
 
-    // Statistics
     Statistics m_statistics;
-
-    // ===== Compilation =====
 
     void BuildDependencyGraph();
 
     void TopologicalSort();
-
-    // ===== Resource Management =====
 
     void AllocateResources();
 
@@ -237,22 +218,17 @@ private:
 
     void CalculateResourceLifetimes();
 
-    void CleanupOldResources(); // Called during NextFrame
-    void AliasResources();
+    void CleanupOldResources();
 
-    // ===== Barrier Insertion =====
+    void AliasResources();
 
     void InsertBarriers(uint32_t passIndex);
 
     void TransitionExternalResource(const std::string &name, uint32_t newState);
 
-    // ===== Execution =====
-
     void ExecutePass(const CompiledPass &compiledPass);
 
     RenderPassContext BuildPassContext(const CompiledPass &compiledPass);
-
-    // ===== Helpers =====
 
     TransientResource *GetCurrentFrameResource(const std::string &name);
 

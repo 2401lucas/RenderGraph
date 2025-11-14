@@ -6,6 +6,7 @@
 #include <d3dcompiler.h>
 #include <fstream>
 #include <algorithm>
+#include <sstream>
 
 #include "D3D12CommandQueue.h"
 
@@ -27,7 +28,7 @@ ComPtr<IDXGIAdapter4> SelectAdapter(ComPtr<IDXGIFactory6> factory, uint32_t pref
             continue;
         }
 
-        if (SUCCEEDED(D3D12CreateDevice(adapter4.Get(), D3D_FEATURE_LEVEL_12_0, __uuidof(ID3D12Device), nullptr))) {
+        if (SUCCEEDED(D3D12CreateDevice(adapter4.Get(), D3D_FEATURE_LEVEL_12_1, __uuidof(ID3D12Device), nullptr))) {
             if (index == preferredIndex) {
                 chosenAdapter = adapter4;
                 break;
@@ -257,6 +258,8 @@ void UploadBufferAllocator::Reset() {
 // ===== D3D12Device Implementation =====
 
 D3D12Device::D3D12Device(const DeviceCreateInfo &info) {
+    OutputDebugStringA("===== Initializing D3D12 =====\n");
+
     UINT flags = 0u;
 #if defined(_DEBUG)
     ComPtr<ID3D12Debug> debugInterface;
@@ -277,12 +280,31 @@ D3D12Device::D3D12Device(const DeviceCreateInfo &info) {
     ComPtr<IDXGIFactory6> factory;
     DX_CHECK(CreateDXGIFactory2(flags, IID_PPV_ARGS(&factory)));
 
+    OutputDebugStringA("=== D3D12 Device Selection ===\n");
     m_adapter = SelectAdapter(factory, 1);
     if (!m_adapter) {
         throw std::runtime_error("No suitable DXGI adapter found.");
     }
+    DXGI_ADAPTER_DESC desc;
+    m_adapter->GetDesc(&desc);
+    std::wstringstream ss;
 
-    DX_CHECK(D3D12CreateDevice(m_adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_device)));
+    ss << L"DXGI_ADAPTER_DESC\n";
+    ss << L"Description: " << desc.Description << L"\n";
+    ss << L"DedicatedVideoMemory:   " << (desc.DedicatedVideoMemory / (1024 * 1024)) << L" MB\n";
+    ss << L"DedicatedSystemMemory:  " << (desc.DedicatedSystemMemory / (1024 * 1024)) << L" MB\n";
+    ss << L"SharedSystemMemory:     " << (desc.SharedSystemMemory / (1024 * 1024)) << L" MB\n";
+    ss << L"=========================\n";
+
+    // Convert to narrow string for OutputDebugStringA
+    std::wstring ws = ss.str();
+    std::string msg(ws.begin(), ws.end());
+    OutputDebugStringA(msg.c_str());
+
+
+    DX_CHECK(D3D12CreateDevice(m_adapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&m_device)));
+
+    CheckBindlessSupport();
 
 #if defined(_DEBUG)
     if (info.enableDebugLayer) {
@@ -298,12 +320,24 @@ D3D12Device::D3D12Device(const DeviceCreateInfo &info) {
     InitializeDescriptorHeaps();
     InitializeCommandAllocatorPools();
 
+    m_bindlessManager = std::make_unique<D3D12BindlessDescriptorManager>(m_device.Get());
+    m_bindlessRootSignature = CreateBindlessRootSignature();
+    m_bindlessManager->m_rootSignature = m_bindlessRootSignature.Get();
+
+    CommandQueueCreateInfo commandQueueCreateInfo{
+        .type = QueueType::Graphics,
+        .debugName = "Internal Transfer",
+    };
+    m_uploadCommandQueue = std::unique_ptr<D3D12CommandQueue>(
+        (D3D12CommandQueue *) CreateCommandQueue(commandQueueCreateInfo));
+    m_uploadCommandList = std::unique_ptr<
+        D3D12CommandList>((D3D12CommandList *) CreateCommandList(QueueType::Graphics));
+
     // Initialize upload allocator
     m_uploadAllocator = std::make_unique<UploadBufferAllocator>(m_device.Get());
 }
 
 D3D12Device::~D3D12Device() {
-    WaitIdle();
     if (m_fenceEvent) {
         CloseHandle(m_fenceEvent);
     }
@@ -339,10 +373,115 @@ void D3D12Device::WaitForFenceValue(UINT64 value) {
     }
 }
 
+
+/*
+ * Root Signature Layout (Tier 2 Compatible):
+ *
+ * Root Parameter 0: Descriptor Table - Large SRV range (t0-t999)
+ * Root Parameter 1: Descriptor Table - Large UAV range (u0-u99)
+ * Root Parameter 2: Descriptor Table - Sampler range (s0-s15)
+ * Root Parameter 3: Root Constants (64 bytes)
+ * Root Parameter 4: Root CBV for per-frame data (b0)
+ * Root Parameter 5: Root CBV for per-object data (b1)
+ */
+ComPtr<ID3D12RootSignature> D3D12Device::CreateBindlessRootSignature() {
+    D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+    m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
+
+    bool supportsBindlessTier2 = (options.ResourceBindingTier >= D3D12_RESOURCE_BINDING_TIER_2);
+
+    if (!supportsBindlessTier2) {
+        throw std::exception(
+            "WARNING: Device doesn't support Tier 2 resource binding. Using traditional descriptors.\n");
+        return CreateFallbackRootSignature();
+    }
+
+
+    CD3DX12_DESCRIPTOR_RANGE1 ranges[3];
+
+    ranges[0].Init(
+        D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+        MAX_BINDLESS_SRVS,
+        0,
+        0,
+        D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE
+    );
+
+    ranges[1].Init(
+        D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+        MAX_BINDLESS_UAVS,
+        0,
+        0,
+        D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE
+    );
+
+    ranges[2].Init(
+        D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
+        16, // s0-s15
+        0,
+        0,
+        D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE
+    );
+
+    CD3DX12_ROOT_PARAMETER1 rootParams[6];
+
+    // 0: Large SRV table
+    rootParams[0].InitAsDescriptorTable(1, &ranges[0], D3D12_SHADER_VISIBILITY_ALL);
+
+    // 1: Large UAV table
+    rootParams[1].InitAsDescriptorTable(1, &ranges[1], D3D12_SHADER_VISIBILITY_ALL);
+
+    // 2: Sampler table
+    rootParams[2].InitAsDescriptorTable(1, &ranges[2], D3D12_SHADER_VISIBILITY_ALL);
+
+    // 3: Push constants (64 bytes)
+    rootParams[3].InitAsConstants(16, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
+
+    // 4: Per-frame CBV
+    rootParams[4].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL);
+
+    // 5: Per-object CBV
+    rootParams[5].InitAsConstantBufferView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL);
+
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc;
+
+    D3D12_ROOT_SIGNATURE_FLAGS flags =
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    rsDesc.Init_1_1(
+        _countof(rootParams),
+        rootParams,
+        0,
+        nullptr,
+        flags
+    );
+
+    ComPtr<ID3DBlob> serialized, error;
+    HRESULT hr = D3D12SerializeVersionedRootSignature(&rsDesc, &serialized, &error);
+
+    if (FAILED(hr)) {
+        if (error) {
+            OutputDebugStringA("Bindless root signature serialization failed:\n");
+            OutputDebugStringA(static_cast<const char *>(error->GetBufferPointer()));
+        }
+        throw std::runtime_error("Failed to serialize bindless root signature");
+    }
+
+    ComPtr<ID3D12RootSignature> rootSig;
+    DX_CHECK(m_device->CreateRootSignature(
+        0,
+        serialized->GetBufferPointer(),
+        serialized->GetBufferSize(),
+        IID_PPV_ARGS(&rootSig)
+    ));
+
+    rootSig->SetName(L"Bindless Root Signature");
+
+    return rootSig;
+}
+
 void D3D12Device::WaitIdle() {
-    const UINT64 currentFence = m_fenceValue;
-    //Signal();
-    WaitForFenceValue(currentFence);
+    // Externally synced for now
 }
 
 CommandList *D3D12Device::CreateCommandList(QueueType queueType) {
@@ -351,12 +490,11 @@ CommandList *D3D12Device::CreateCommandList(QueueType queueType) {
     D3D12_COMMAND_LIST_TYPE d3d12Type = GetD3D12CommandListType(queueType);
     cmdList->m_commandListType = d3d12Type;
 
-    // Create a TEMPORARY allocator just for initial creation
-    // The real allocator will be set by the CommandQueue
+    // Creates a temporary allocator for initial creation
+    // Real allocator is set by the D3D12CommandQueue
     ComPtr<ID3D12CommandAllocator> tempAllocator;
     DX_CHECK(m_device->CreateCommandAllocator(d3d12Type, IID_PPV_ARGS(&tempAllocator)));
 
-    // Create command list in closed state
     DX_CHECK(m_device->CreateCommandList(
         0,
         d3d12Type,
@@ -364,11 +502,9 @@ CommandList *D3D12Device::CreateCommandList(QueueType queueType) {
         nullptr,
         IID_PPV_ARGS(&cmdList->m_cmdList)
     ));
-
-    // Close it immediately - it starts in recording state
+    // Close immediately as it starts recording upon creation
     cmdList->m_cmdList->Close();
 
-    // Set debug name
     const wchar_t *typeName = GetQueueTypeName(queueType);
     std::wstring name = std::wstring(typeName) + L" CommandList";
     cmdList->m_cmdList->SetName(name.c_str());
@@ -376,36 +512,10 @@ CommandList *D3D12Device::CreateCommandList(QueueType queueType) {
     return cmdList.release();
 }
 
-// Alternative: Create command list with specific allocator
-CommandList *D3D12Device::CreateCommandListWithAllocator(
-    QueueType queueType,
-    ID3D12CommandAllocator *allocator
-) {
-    auto cmdList = std::make_unique<D3D12CommandList>();
-
-    D3D12_COMMAND_LIST_TYPE d3d12Type = GetD3D12CommandListType(queueType);
-    cmdList->m_commandListType = d3d12Type;
-    cmdList->m_allocator = allocator; // Set the allocator
-
-    // Create command list
-    DX_CHECK(m_device->CreateCommandList(
-        0,
-        d3d12Type,
-        allocator,
-        nullptr,
-        IID_PPV_ARGS(&cmdList->m_cmdList)
-    ));
-
-    // Close it immediately
-    cmdList->m_cmdList->Close();
-
-    return cmdList.release();
-}
-
 Swapchain *D3D12Device::CreateSwapchain(void *windowHandle, CommandQueue *queue, uint32_t width, uint32_t height) {
     if (!windowHandle)
         return nullptr;
-    D3D12Swapchain *m_swapchain = new D3D12Swapchain();
+    auto m_swapchain = std::make_unique<D3D12Swapchain>();
     m_swapchain->m_device = m_device;
 
     ComPtr<IDXGIFactory4> factory;
@@ -416,16 +526,17 @@ Swapchain *D3D12Device::CreateSwapchain(void *windowHandle, CommandQueue *queue,
     if (FAILED(CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&factory))))
         return nullptr;
 
-    DXGI_SWAP_CHAIN_DESC1 scDesc = {};
-    scDesc.BufferCount = FrameCount;
-    scDesc.Width = width;
-    scDesc.Height = height;
-    scDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    scDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-    scDesc.SampleDesc.Count = 1;
-    scDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-    scDesc.Scaling = DXGI_SCALING_STRETCH;
+    DXGI_SWAP_CHAIN_DESC1 scDesc = {
+        .Width = width,
+        .Height = height,
+        .Format = DXGI_FORMAT_R8G8B8A8_UNORM,
+        .SampleDesc = {.Count = 1},
+        .BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
+        .BufferCount = FrameCount,
+        .Scaling = DXGI_SCALING_STRETCH,
+        .SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
+        .AlphaMode = DXGI_ALPHA_MODE_IGNORE,
+    };
 
     auto q = (D3D12CommandQueue *) queue;
     ComPtr<IDXGISwapChain1> swapChain1;
@@ -437,16 +548,14 @@ Swapchain *D3D12Device::CreateSwapchain(void *windowHandle, CommandQueue *queue,
         nullptr,
         &swapChain1));
 
-    // Disable Alt+Enter fullscreen toggle
-    // factory->MakeWindowAssociation(static_cast<HWND>(windowHandle), DXGI_MWA_NO_ALT_ENTER);
-
     DX_CHECK(swapChain1.As(&m_swapchain->m_swapchain));
 
     // RTV Heap creation
-    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    rtvHeapDesc.NumDescriptors = FrameCount;
-    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {
+        .Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+        .NumDescriptors = FrameCount,
+        .Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+    };
 
     m_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_swapchain->m_rtvHeap));
 
@@ -464,7 +573,7 @@ Swapchain *D3D12Device::CreateSwapchain(void *windowHandle, CommandQueue *queue,
         m_swapchain->m_backBufferTextureWrappers[i]->resource = m_swapchain->m_backBuffers[i];
         rtvHandle.Offset(1, m_swapchain->m_rtvDescriptorSize);
     }
-    return m_swapchain;
+    return m_swapchain.release();
 }
 
 CommandQueue *D3D12Device::CreateCommandQueue(const CommandQueueCreateInfo &createInfo) {
@@ -476,11 +585,12 @@ CommandQueue *D3D12Device::CreateCommandQueue(const CommandQueueCreateInfo &crea
         queue->m_d3d12Type = GetD3D12CommandListType(createInfo.type);
 
         // Create command queue
-        D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-        queueDesc.Type = queue->m_d3d12Type;
-        queueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-        queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-        queueDesc.NodeMask = 0;
+        D3D12_COMMAND_QUEUE_DESC queueDesc = {
+            .Type = queue->m_d3d12Type,
+            .Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
+            .Flags = D3D12_COMMAND_QUEUE_FLAG_NONE,
+            .NodeMask = 0,
+        };
 
         DX_CHECK(m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue->m_commandQueue)));
 
@@ -536,23 +646,26 @@ CommandQueue *D3D12Device::CreateCommandQueue(const CommandQueueCreateInfo &crea
 }
 
 Buffer *D3D12Device::CreateBuffer(const BufferCreateInfo &desc) {
-    D3D12Buffer *buffer = new D3D12Buffer();
+    auto buffer = std::make_unique<D3D12Buffer>();
     buffer->size = desc.size;
     buffer->usage = desc.usage;
+    buffer->stride = desc.stride;
 
-    D3D12_RESOURCE_DESC resourceDesc = {};
-    resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    resourceDesc.Alignment = 0;
-    resourceDesc.Width = desc.size;
-    resourceDesc.Height = 1;
-    resourceDesc.DepthOrArraySize = 1;
-    resourceDesc.MipLevels = 1;
-    resourceDesc.Format = DXGI_FORMAT_UNKNOWN;
-    resourceDesc.SampleDesc.Count = 1;
-    resourceDesc.SampleDesc.Quality = 0;
-    resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
+    D3D12_RESOURCE_DESC resourceDesc = {
+        .Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
+        .Alignment = 0,
+        .Width = desc.size,
+        .Height = 1,
+        .DepthOrArraySize = 1,
+        .MipLevels = 1,
+        .Format = DXGI_FORMAT_UNKNOWN,
+        .SampleDesc = {
+            .Count = 1,
+            .Quality = 0,
+        },
+        .Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+        .Flags = D3D12_RESOURCE_FLAG_NONE,
+    };
     // Determine heap type and initial state based on usage
     D3D12_HEAP_TYPE heapType = D3D12_HEAP_TYPE_DEFAULT;
     D3D12_RESOURCE_STATES initialState = BufferUsageToResourceState(desc.usage);
@@ -580,7 +693,55 @@ Buffer *D3D12Device::CreateBuffer(const BufferCreateInfo &desc) {
 
     m_stateTracker.TrackResource(buffer->resource.Get(), initialState);
 
-    return buffer;
+    // Cache GPU address
+    buffer->gpuAddress = buffer->resource->GetGPUVirtualAddress();
+
+    // Create bindless descriptors based on usage
+    if (desc.usage == BufferUsage::Storage) {
+        // Structured buffer for reading (SRV)
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+            .Format = DXGI_FORMAT_UNKNOWN,
+            .ViewDimension = D3D12_SRV_DIMENSION_BUFFER,
+            .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+            .Buffer = {
+                .FirstElement = 0,
+                .NumElements = static_cast<UINT>(desc.size / desc.stride),
+                .StructureByteStride = desc.stride,
+                .Flags = D3D12_BUFFER_SRV_FLAG_NONE,
+            },
+        };
+        buffer->srvHandle = m_bindlessManager->AllocateSRV(buffer->resource.Get(), &srvDesc);
+        buffer->stride = desc.stride;
+    }
+
+    if (desc.usage == BufferUsage::UnorderedAccess) {
+        // RW Structured buffer (UAV)
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
+            .Format = DXGI_FORMAT_UNKNOWN,
+            .ViewDimension = D3D12_UAV_DIMENSION_BUFFER,
+            .Buffer = {
+                .FirstElement = 0,
+                .NumElements = static_cast<UINT>(desc.size / desc.stride),
+                .StructureByteStride = desc.stride,
+                .CounterOffsetInBytes = 0,
+                .Flags = D3D12_BUFFER_UAV_FLAG_NONE,
+            }
+        };
+        buffer->uavHandle = m_bindlessManager->AllocateUAV(buffer->resource.Get(), &uavDesc);
+        buffer->stride = desc.stride;
+    }
+
+    if (desc.usage == BufferUsage::Uniform) {
+        // Constant buffer view
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc = {
+            .BufferLocation = buffer->gpuAddress,
+            .SizeInBytes = static_cast<UINT>((desc.size + 255) & ~255), // Align to 256 bytes
+        };
+        buffer->cbvHandle = m_bindlessManager->AllocateCBV(&cbvDesc);
+    }
+
+
+    return buffer.release();
 }
 
 Texture *D3D12Device::CreateTexture(const TextureCreateInfo &desc) {
@@ -590,19 +751,21 @@ Texture *D3D12Device::CreateTexture(const TextureCreateInfo &desc) {
     texture->format = desc.format;
     texture->usage = desc.usage;
 
-    D3D12_RESOURCE_DESC resourceDesc = {};
-    resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-    resourceDesc.Alignment = 0;
-    resourceDesc.Width = desc.width;
-    resourceDesc.Height = desc.height;
-    resourceDesc.DepthOrArraySize = 1;
-    resourceDesc.MipLevels = desc.mipLevels;
-    resourceDesc.Format = TextureFormatToDxgiFormat(desc.format);
-    resourceDesc.SampleDesc.Count = 1;
-    resourceDesc.SampleDesc.Quality = 0;
-    resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-    resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
+    D3D12_RESOURCE_DESC resourceDesc = {
+        .Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        .Alignment = 0,
+        .Width = desc.width,
+        .Height = desc.height,
+        .DepthOrArraySize = 1,
+        .MipLevels = desc.mipLevels,
+        .Format = TextureFormatToDxgiFormat(desc.format),
+        .SampleDesc = {
+            .Count = 1,
+            .Quality = 0,
+        },
+        .Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        .Flags = D3D12_RESOURCE_FLAG_NONE,
+    };
     D3D12_RESOURCE_STATES initialState = TextureUsageToResourceState(desc.usage);
 
     if (desc.usage == TextureUsage::RenderTarget) {
@@ -612,7 +775,6 @@ Texture *D3D12Device::CreateTexture(const TextureCreateInfo &desc) {
     } else if (desc.usage == TextureUsage::UnorderedAccess) {
         resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     }
-    // D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS
 
     CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
 
@@ -644,54 +806,87 @@ Texture *D3D12Device::CreateTexture(const TextureCreateInfo &desc) {
     m_stateTracker.TrackResource(texture->resource.Get(), initialState);
 
     // Create views
+    // RTV and DSV remain non-bindless (they must be CPU descriptors)
     if (desc.usage == TextureUsage::RenderTarget) {
         texture->rtvHandle = m_rtvHeap->AllocateCPU();
-        D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
-        rtvDesc.Format = resourceDesc.Format;
-        rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-        rtvDesc.Texture2D.MipSlice = 0;
+        D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {
+            .Format = resourceDesc.Format,
+            .ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D,
+            .Texture2D = {.MipSlice = 0},
+        };
         m_device->CreateRenderTargetView(texture->resource.Get(), &rtvDesc, texture->rtvHandle);
     }
 
     if (desc.usage == TextureUsage::DepthStencil) {
         texture->dsvHandle = m_dsvHeap->AllocateCPU();
-        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
-        dsvDesc.Format = resourceDesc.Format;
-        dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
-        dsvDesc.Flags = D3D12_DSV_FLAG_NONE;
-        dsvDesc.Texture2D.MipSlice = 0;
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {
+            .Format = resourceDesc.Format,
+            .ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D,
+            .Flags = D3D12_DSV_FLAG_NONE,
+            .Texture2D = {.MipSlice = 0},
+        };
         m_device->CreateDepthStencilView(texture->resource.Get(), &dsvDesc, texture->dsvHandle);
     }
 
+    // Create bindless SRV for shader access
     if (desc.usage == TextureUsage::ShaderResource || desc.usage == TextureUsage::RenderTarget) {
-        texture->srvHandle = m_cbvSrvUavHeap->AllocateCPU();
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.Format = resourceDesc.Format;
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Texture2D.MostDetailedMip = 0;
-        srvDesc.Texture2D.MipLevels = desc.mipLevels;
-        m_device->CreateShaderResourceView(texture->resource.Get(), &srvDesc, texture->srvHandle);
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {
+            .Format = resourceDesc.Format,
+            .ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D,
+            .Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+            .Texture2D = {
+                .MostDetailedMip = 0,
+                .MipLevels = desc.mipLevels,
+            },
+        };
+        texture->srvHandle = m_bindlessManager->AllocateSRV(texture->resource.Get(), &srvDesc);
     }
+
+    // Create bindless UAV for RW access
+    if (desc.usage == TextureUsage::UnorderedAccess) {
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {
+            .Format = resourceDesc.Format,
+            .ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D,
+            .Texture2D = {.MipSlice = 0},
+        };
+        texture->uavHandle = m_bindlessManager->AllocateUAV(texture->resource.Get(), &uavDesc);
+    }
+
 
     return texture;
 }
 
 void D3D12Device::DestroyBuffer(Buffer *buffer) {
+    if (buffer) {
+        D3D12Buffer *d3d12Buf = static_cast<D3D12Buffer *>(buffer);
+        if (d3d12Buf->srvHandle.IsValid()) {
+            m_bindlessManager->Free(d3d12Buf->srvHandle);
+        }
+        if (d3d12Buf->uavHandle.IsValid()) {
+            m_bindlessManager->Free(d3d12Buf->uavHandle);
+        }
+        if (d3d12Buf->cbvHandle.IsValid()) {
+            m_bindlessManager->Free(d3d12Buf->cbvHandle);
+        }
+    }
     delete buffer;
 }
 
 void D3D12Device::DestroyTexture(Texture *texture) {
     if (texture) {
         D3D12Texture *d3d12Tex = static_cast<D3D12Texture *>(texture);
+
         if (d3d12Tex->rtvHandle.ptr != 0) {
             m_rtvHeap->Free(d3d12Tex->rtvHandle);
         }
         if (d3d12Tex->dsvHandle.ptr != 0) {
             m_dsvHeap->Free(d3d12Tex->dsvHandle);
         }
-        if (d3d12Tex->srvHandle.ptr != 0) {
-            m_cbvSrvUavHeap->Free(d3d12Tex->srvHandle);
+        if (d3d12Tex->srvHandle.IsValid()) {
+            m_bindlessManager->Free(d3d12Tex->srvHandle);
+        }
+        if (d3d12Tex->uavHandle.IsValid()) {
+            m_bindlessManager->Free(d3d12Tex->uavHandle);
         }
     }
     delete texture;
@@ -779,7 +974,6 @@ ComPtr<ID3D12RootSignature> D3D12Device::CreateDefaultComputeRootSignature() {
     rsDesc.Init_1_1(_countof(rootParams), rootParams, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE);
 
     ComPtr<ID3DBlob> serialized, error;
-    // CRITICAL FIX: Use D3D12SerializeVersionedRootSignature with VERSION_1_1
     HRESULT hr = D3D12SerializeVersionedRootSignature(&rsDesc, &serialized, &error);
 
     if (FAILED(hr)) {
@@ -797,49 +991,140 @@ ComPtr<ID3D12RootSignature> D3D12Device::CreateDefaultComputeRootSignature() {
     return rootSig;
 }
 
-Pipeline *D3D12Device::CreatePipeline(const PipelineCreateInfo &pipelineCreateInfo) {
-    if (!m_graphicsRootSignature) {
-        m_graphicsRootSignature = CreateDefaultGraphicsRootSignature();
+/*
+ * Fallback Root Signature Layout (Compatible with Tier 1):
+ *
+ * Root Parameter 0: Descriptor Table - SRVs (t0-t99)
+ * Root Parameter 1: Descriptor Table - UAVs (u0-u7)
+ * Root Parameter 2: Descriptor Table - Samplers (s0-s7)
+ * Root Parameter 3: Root Constants (64 bytes)
+ * Root Parameter 4: Root CBV (b0)
+ * Root Parameter 5: Root CBV (b1)
+ */
+ComPtr<ID3D12RootSignature> D3D12Device::CreateFallbackRootSignature() {
+    CD3DX12_DESCRIPTOR_RANGE1 ranges[3];
+
+    ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 100, 0);
+    ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 8, 0);
+    ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 8, 0);
+
+    CD3DX12_ROOT_PARAMETER1 rootParams[6];
+    rootParams[0].InitAsDescriptorTable(1, &ranges[0], D3D12_SHADER_VISIBILITY_ALL);
+    rootParams[1].InitAsDescriptorTable(1, &ranges[1], D3D12_SHADER_VISIBILITY_ALL);
+    rootParams[2].InitAsDescriptorTable(1, &ranges[2], D3D12_SHADER_VISIBILITY_ALL);
+    rootParams[3].InitAsConstants(16, 2, 0, D3D12_SHADER_VISIBILITY_ALL);
+    rootParams[4].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL);
+    rootParams[5].InitAsConstantBufferView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC, D3D12_SHADER_VISIBILITY_ALL);
+
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rsDesc;
+    rsDesc.Init_1_1(
+        _countof(rootParams),
+        rootParams,
+        0,
+        nullptr,
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+    );
+
+    ComPtr<ID3DBlob> serialized, error;
+    HRESULT hr = D3D12SerializeVersionedRootSignature(&rsDesc, &serialized, &error);
+
+    if (FAILED(hr)) {
+        if (error) {
+            OutputDebugStringA("Fallback root signature serialization failed:\n");
+            OutputDebugStringA(static_cast<const char *>(error->GetBufferPointer()));
+        }
+        throw std::runtime_error("Failed to serialize fallback root signature");
     }
 
+    ComPtr<ID3D12RootSignature> rootSig;
+    DX_CHECK(m_device->CreateRootSignature(
+        0,
+        serialized->GetBufferPointer(),
+        serialized->GetBufferSize(),
+        IID_PPV_ARGS(&rootSig)
+    ));
+
+    rootSig->SetName(L"Fallback Root Signature");
+
+    OutputDebugStringA("Using fallback root signature (limited to 100 textures)\n");
+
+    return rootSig;
+}
+
+void D3D12Device::CheckBindlessSupport() {
+    D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+    m_device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options));
+
+    OutputDebugStringA("=== D3D12 Feature Support ===\n");
+
+    switch (options.ResourceBindingTier) {
+        case D3D12_RESOURCE_BINDING_TIER_1:
+            OutputDebugStringA("Resource Binding Tier: 1 (Limited)\n");
+            OutputDebugStringA("  - Max descriptors per table: 16 (SRV/UAV/CBV), 16 (Samplers)\n");
+            break;
+        case D3D12_RESOURCE_BINDING_TIER_2:
+            OutputDebugStringA("Resource Binding Tier: 2 (Good for bindless)\n");
+            OutputDebugStringA("  - Max descriptors per table: 1,000,000 (SRV/UAV/CBV)\n");
+            break;
+        case D3D12_RESOURCE_BINDING_TIER_3:
+            OutputDebugStringA("Resource Binding Tier: 3 (Full bindless support)\n");
+            OutputDebugStringA("  - Unlimited descriptors, full bindless\n");
+            break;
+    }
+
+    D3D12_FEATURE_DATA_SHADER_MODEL shaderModel = {D3D_SHADER_MODEL_6_0};
+    if (SUCCEEDED(m_device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof(shaderModel)))) {
+        char msg[256];
+        sprintf_s(msg, "Shader Model: %d.%d\n",
+                  (shaderModel.HighestShaderModel >> 4),
+                  (shaderModel.HighestShaderModel & 0xF));
+        OutputDebugStringA(msg);
+    }
+
+    OutputDebugStringA("============================\n");
+}
+
+Pipeline *D3D12Device::CreatePipeline(const PipelineCreateInfo &pipelineCreateInfo) {
     std::vector<D3D12_INPUT_ELEMENT_DESC> inputLayout;
     inputLayout.reserve(pipelineCreateInfo.vertexAttributeCount);
 
     for (uint32_t i = 0; i < pipelineCreateInfo.vertexAttributeCount; ++i) {
         const auto &a = pipelineCreateInfo.vertexAttributes[i];
-        D3D12_INPUT_ELEMENT_DESC desc = {};
-        desc.SemanticName = a.semantic;
-        desc.SemanticIndex = a.index;
-        desc.Format = TextureFormatToDxgiFormat(a.format);
-        desc.InputSlot = 0;
-        desc.AlignedByteOffset = a.offset;
-        desc.InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-        desc.InstanceDataStepRate = 0;
+        D3D12_INPUT_ELEMENT_DESC desc = {
+            .SemanticName = a.semantic,
+            .SemanticIndex = a.index,
+            .Format = TextureFormatToDxgiFormat(a.format),
+            .InputSlot = 0,
+            .AlignedByteOffset = a.offset,
+            .InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+            .InstanceDataStepRate = 0,
+        };
         inputLayout.push_back(desc);
     }
 
-    D3D12_RASTERIZER_DESC rastDesc = {};
-    rastDesc.FillMode = pipelineCreateInfo.wireframe ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
-    rastDesc.CullMode = (pipelineCreateInfo.cullMode == CullMode::None)
-                            ? D3D12_CULL_MODE_NONE
-                            : (pipelineCreateInfo.cullMode == CullMode::Front)
-                                  ? D3D12_CULL_MODE_FRONT
-                                  : D3D12_CULL_MODE_BACK;
-    rastDesc.FrontCounterClockwise = FALSE;
-    rastDesc.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-    rastDesc.DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP;
-    rastDesc.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-    rastDesc.DepthClipEnable = TRUE;
-    rastDesc.MultisampleEnable = pipelineCreateInfo.sampleCount > 1;
-    rastDesc.AntialiasedLineEnable = FALSE;
-    rastDesc.ForcedSampleCount = 0;
-    rastDesc.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+    D3D12_RASTERIZER_DESC rastDesc = {
+        .FillMode = pipelineCreateInfo.wireframe ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID,
+        .CullMode = (pipelineCreateInfo.cullMode == CullMode::None)
+                        ? D3D12_CULL_MODE_NONE
+                        : (pipelineCreateInfo.cullMode == CullMode::Front)
+                              ? D3D12_CULL_MODE_FRONT
+                              : D3D12_CULL_MODE_BACK,
+        .FrontCounterClockwise = FALSE,
+        .DepthBias = D3D12_DEFAULT_DEPTH_BIAS,
+        .DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP,
+        .SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS,
+        .DepthClipEnable = TRUE,
+        .MultisampleEnable = pipelineCreateInfo.sampleCount > 1,
+        .AntialiasedLineEnable = FALSE,
+        .ForcedSampleCount = 0,
+        .ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+    };
+    D3D12_BLEND_DESC blendDesc = {
+        .AlphaToCoverageEnable = FALSE,
+        .IndependentBlendEnable = (pipelineCreateInfo.renderTargetCount > 1) ? TRUE : FALSE,
+    };
 
-    D3D12_BLEND_DESC blendDesc = {};
-    blendDesc.AlphaToCoverageEnable = FALSE;
-    blendDesc.IndependentBlendEnable = (pipelineCreateInfo.renderTargetCount > 1) ? TRUE : FALSE;
-    for (uint32_t i = 0; i < 8; ++i) {
-        D3D12_RENDER_TARGET_BLEND_DESC &att = blendDesc.RenderTarget[i];
+    for (auto &att: blendDesc.RenderTarget) {
         att.BlendEnable = pipelineCreateInfo.blendMode != BlendMode::None;
         att.SrcBlend = D3D12_BLEND_ONE;
         att.DestBlend = D3D12_BLEND_ZERO;
@@ -850,89 +1135,93 @@ Pipeline *D3D12Device::CreatePipeline(const PipelineCreateInfo &pipelineCreateIn
         att.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     }
 
-    D3D12_DEPTH_STENCIL_DESC dsDesc = {};
-    dsDesc.DepthEnable = pipelineCreateInfo.depthTestEnable;
-    dsDesc.DepthWriteMask = pipelineCreateInfo.depthWriteEnable
-                                ? D3D12_DEPTH_WRITE_MASK_ALL
-                                : D3D12_DEPTH_WRITE_MASK_ZERO;
-    dsDesc.DepthFunc = (pipelineCreateInfo.depthFunc == CompareFunc::Less)
-                           ? D3D12_COMPARISON_FUNC_LESS
-                           : (pipelineCreateInfo.depthFunc == CompareFunc::LessEqual)
-                                 ? D3D12_COMPARISON_FUNC_LESS_EQUAL
-                                 : (pipelineCreateInfo.depthFunc == CompareFunc::Greater)
-                                       ? D3D12_COMPARISON_FUNC_GREATER
-                                       : D3D12_COMPARISON_FUNC_ALWAYS;
-    dsDesc.StencilEnable = FALSE;
-
+    D3D12_DEPTH_STENCIL_DESC dsDesc = {
+        .DepthEnable = pipelineCreateInfo.depthTestEnable,
+        .DepthWriteMask = pipelineCreateInfo.depthWriteEnable
+                              ? D3D12_DEPTH_WRITE_MASK_ALL
+                              : D3D12_DEPTH_WRITE_MASK_ZERO,
+        .DepthFunc = (pipelineCreateInfo.depthFunc == CompareFunc::Less)
+                         ? D3D12_COMPARISON_FUNC_LESS
+                         : (pipelineCreateInfo.depthFunc == CompareFunc::LessEqual)
+                               ? D3D12_COMPARISON_FUNC_LESS_EQUAL
+                               : (pipelineCreateInfo.depthFunc == CompareFunc::Greater)
+                                     ? D3D12_COMPARISON_FUNC_GREATER
+                                     : D3D12_COMPARISON_FUNC_ALWAYS,
+        .StencilEnable = FALSE,
+    };
     auto vsBlob = GetShaderBlob(pipelineCreateInfo.vertexShader);
     auto psBlob = GetShaderBlob(pipelineCreateInfo.pixelShader);
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-    psoDesc.pRootSignature = m_graphicsRootSignature.Get();
-    psoDesc.VS = {vsBlob ? vsBlob->GetBufferPointer() : nullptr, vsBlob ? vsBlob->GetBufferSize() : 0};
-    psoDesc.PS = {psBlob ? psBlob->GetBufferPointer() : nullptr, psBlob ? psBlob->GetBufferSize() : 0};
-    psoDesc.BlendState = blendDesc;
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.RasterizerState = rastDesc;
-    psoDesc.DepthStencilState = dsDesc;
-    psoDesc.InputLayout.pInputElementDescs = inputLayout.data();
-    psoDesc.InputLayout.NumElements = static_cast<UINT>(inputLayout.size());
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = pipelineCreateInfo.renderTargetCount;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {
+        .pRootSignature = m_bindlessRootSignature.Get(),
+        .VS = {vsBlob ? vsBlob->GetBufferPointer() : nullptr, vsBlob ? vsBlob->GetBufferSize() : 0},
+        .PS = {psBlob ? psBlob->GetBufferPointer() : nullptr, psBlob ? psBlob->GetBufferSize() : 0},
+        .BlendState = blendDesc,
+        .SampleMask = UINT_MAX,
+        .RasterizerState = rastDesc,
+        .DepthStencilState = dsDesc,
+        .InputLayout = {
+            .pInputElementDescs = inputLayout.data(),
+            .NumElements = static_cast<UINT>(inputLayout.size()),
+        },
+        .PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+        .NumRenderTargets = pipelineCreateInfo.renderTargetCount,
+        .DSVFormat = TextureFormatToDxgiFormat(pipelineCreateInfo.depthStencilFormat),
+        .SampleDesc = {
+            .Count = pipelineCreateInfo.sampleCount > 0 ? pipelineCreateInfo.sampleCount : 1,
+            .Quality = 0,
+        },
+    };
     for (UINT i = 0; i < pipelineCreateInfo.renderTargetCount && i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
         psoDesc.RTVFormats[i] = TextureFormatToDxgiFormat(pipelineCreateInfo.renderTargetFormats[i]);
-    psoDesc.DSVFormat = TextureFormatToDxgiFormat(pipelineCreateInfo.depthStencilFormat);
-    psoDesc.SampleDesc.Count = pipelineCreateInfo.sampleCount > 0 ? pipelineCreateInfo.sampleCount : 1;
-    psoDesc.SampleDesc.Quality = 0;
 
-    D3D12Pipeline *pipeline = new D3D12Pipeline();
+    auto pipeline = std::make_unique<D3D12Pipeline>();
     DX_CHECK(m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipeline->pso)));
 
-    return pipeline;
+    return pipeline.release();
 }
 
 void D3D12Device::UploadBufferData(Buffer *buffer, const void *data, size_t size) {
-    // if (!buffer || !data || size == 0) return;
-    //
-    // D3D12Buffer *d3d12Buffer = static_cast<D3D12Buffer *>(buffer);
-    //
-    // // Allocate from upload buffer
-    // auto allocation = m_uploadAllocator->Allocate(size, 256);
-    // memcpy(allocation.cpuAddress, data, size);
-    //
-    // // Create temporary command list for copy
-    // uint64_t completedValue = m_fence->GetCompletedValue();
-    // ComPtr<ID3D12CommandAllocator> allocator = m_directAllocatorPool->RequestAllocator(completedValue);
-    //
-    // ComPtr<ID3D12GraphicsCommandList> cmdList;
-    // DX_CHECK(
-    //     m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&cmdList)
-    //     ));
-    //
-    // // Transition buffer to copy dest if needed
-    // m_stateTracker.TransitionResource(cmdList.Get(), d3d12Buffer->resource.Get(), D3D12_RESOURCE_STATE_COPY_DEST);
-    // m_stateTracker.FlushBarriers(cmdList.Get());
-    //
-    // // Copy data
-    // cmdList->CopyBufferRegion(d3d12Buffer->resource.Get(), 0, allocation.resource, allocation.offset, size);
-    //
-    // // Transition back to original state
-    // D3D12_RESOURCE_STATES targetState = BufferUsageToResourceState(d3d12Buffer->usage);
-    // m_stateTracker.TransitionResource(cmdList.Get(), d3d12Buffer->resource.Get(), targetState);
-    // m_stateTracker.FlushBarriers(cmdList.Get());
-    //
-    // DX_CHECK(cmdList->Close());
-    //
-    // auto q = (D3D12CommandQueue *) list;
-    // // Execute and wait
-    // q->Execute((CommandList*)cmdList.Get());
-    // WaitForFenceValue(fenceValue);
-    //
-    // // Return allocator to pool
-    // m_directAllocatorPool->DiscardAllocator(fenceValue, allocator);
-    //
-    // // Reset upload allocator after synchronization
-    // m_uploadAllocator->Reset();
+    if (!buffer || !data || size == 0) return;
+
+    D3D12Buffer *d3d12Buffer = static_cast<D3D12Buffer *>(buffer);
+
+    // Allocate from upload buffer
+    auto allocation = m_uploadAllocator->Allocate(size, 256);
+    memcpy(allocation.cpuAddress, data, size);
+
+    uint64_t completedValue = m_uploadCommandQueue->GetCompletedFenceValue();
+    ComPtr<ID3D12CommandAllocator> allocator = m_directAllocatorPool->RequestAllocator(completedValue);
+
+    ComPtr<ID3D12GraphicsCommandList> cmdList;
+    DX_CHECK(m_device->CreateCommandList(
+        0,
+        D3D12_COMMAND_LIST_TYPE_DIRECT,
+        allocator.Get(),
+        nullptr,
+        IID_PPV_ARGS(&cmdList)
+    ));
+
+    // Transition buffer to copy dest if needed
+    m_stateTracker.TransitionResource(cmdList.Get(), d3d12Buffer->resource.Get(), D3D12_RESOURCE_STATE_COPY_DEST);
+    m_stateTracker.FlushBarriers(cmdList.Get());
+
+    // Copy data
+    cmdList->CopyBufferRegion(d3d12Buffer->resource.Get(), 0, allocation.resource, allocation.offset, size);
+
+    // Transition back to target state
+    D3D12_RESOURCE_STATES targetState = BufferUsageToResourceState(d3d12Buffer->usage);
+    m_stateTracker.TransitionResource(cmdList.Get(), d3d12Buffer->resource.Get(), targetState);
+    m_stateTracker.FlushBarriers(cmdList.Get());
+
+    DX_CHECK(cmdList->Close());
+    ID3D12CommandList *lists[] = {cmdList.Get()};
+    m_uploadCommandQueue->m_commandQueue->ExecuteCommandLists(1, lists);
+
+    m_uploadCommandQueue->Signal(completedValue);
+
+    // Store for later synchronization
+    m_pendingUploads.push({completedValue, allocator});
 }
 
 void D3D12Device::UploadTextureData(Texture *texture, const void *data, size_t size) {
@@ -964,14 +1253,18 @@ void D3D12Device::UploadTextureData(Texture *texture, const void *data, size_t s
                rowSizeInBytes);
     }
 
-    // Create temporary command list for copy
-    uint64_t completedValue = m_fence->GetCompletedValue();
+    uint64_t completedValue = m_uploadCommandQueue->GetCompletedFenceValue();
     ComPtr<ID3D12CommandAllocator> allocator = m_directAllocatorPool->RequestAllocator(completedValue);
 
     ComPtr<ID3D12GraphicsCommandList> cmdList;
-    DX_CHECK(
-        m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&cmdList)
-        ));
+    DX_CHECK(m_device->CreateCommandList(
+        0,
+        D3D12_COMMAND_LIST_TYPE_DIRECT,
+        allocator.Get(),
+        nullptr,
+        IID_PPV_ARGS(&cmdList)
+    ));
+
 
     // Transition texture to copy dest
     m_stateTracker.TransitionResource(cmdList.Get(), d3d12Texture->resource.Get(), D3D12_RESOURCE_STATE_COPY_DEST);
@@ -991,21 +1284,36 @@ void D3D12Device::UploadTextureData(Texture *texture, const void *data, size_t s
 
     cmdList->CopyTextureRegion(&dstLocation, 0, 0, 0, &srcLocation, nullptr);
 
-    // Transition texture to shader resource
+    // Transition texture to target state
     D3D12_RESOURCE_STATES targetState = TextureUsageToResourceState(d3d12Texture->usage);
     m_stateTracker.TransitionResource(cmdList.Get(), d3d12Texture->resource.Get(), targetState);
     m_stateTracker.FlushBarriers(cmdList.Get());
 
     DX_CHECK(cmdList->Close());
+    ID3D12CommandList *lists[] = {cmdList.Get()};
+    m_uploadCommandQueue->m_commandQueue->ExecuteCommandLists(1, lists);
 
-    // Execute and wait
-    // uint64_t fenceValue = ExecuteCommandList(cmdList.Get());
-    // WaitForFenceValue(fenceValue);
-    //
-    // // Return allocator to pool
-    // m_directAllocatorPool->DiscardAllocator(fenceValue, allocator);
+    m_uploadCommandQueue->Signal(completedValue);
 
-    // Reset upload allocator after synchronization
+    // Store for later synchronization
+    m_pendingUploads.push({completedValue, allocator});
+}
+
+void D3D12Device::FlushUploads() {
+    if (m_pendingUploads.empty()) return;
+
+    // Wait for all uploads to complete
+    auto &last = m_pendingUploads.back();
+    m_uploadCommandQueue->WaitForFence(last.fenceValue);
+
+    // Return allocators to pool
+    while (!m_pendingUploads.empty()) {
+        auto &entry = m_pendingUploads.front();
+        m_directAllocatorPool->DiscardAllocator(entry.fenceValue, entry.allocator);
+        m_pendingUploads.pop();
+    }
+
+    // Reset upload allocator
     m_uploadAllocator->Reset();
 }
 
@@ -1022,9 +1330,9 @@ ComPtr<ID3DBlob> D3D12Device::GetShaderBlob(const Shader &shader) {
 
     UINT compileFlags = 0;
 #ifdef _DEBUG
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES;
 #else
-    compileFlags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+    compileFlags = D3DCOMPILE_OPTIMIZATION_LEVEL3 | D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES;
 #endif
 
     HRESULT hr = D3DCompile(

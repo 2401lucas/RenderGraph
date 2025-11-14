@@ -8,7 +8,6 @@
 
 #include "D3D12Common.h"
 
-
 class D3D12CommandQueue : public CommandQueue {
 public:
     D3D12CommandQueue() = default;
@@ -25,6 +24,8 @@ public:
     void WaitIdle() override;
 
     void AssignCommandList(CommandList*, uint32_t) override;
+
+    uint64_t GetCompletedFenceValue() const override;
 
     QueueType GetType() const override { return m_type; }
     ID3D12CommandQueue* GetNative() const { return m_commandQueue.Get(); }

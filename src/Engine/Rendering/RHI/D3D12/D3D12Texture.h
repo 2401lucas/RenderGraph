@@ -7,7 +7,7 @@
 #include "Rendering/RHI/Texture.h"
 
 #include "D3D12Common.h"
-
+#include "D3D12BindlessDescriptorManager.h"
 
 class D3D12Texture : public Texture {
 public:
@@ -15,7 +15,21 @@ public:
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle;
     D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle;
-    D3D12_CPU_DESCRIPTOR_HANDLE srvHandle;
+
+    // Bindless handles
+    BindlessHandle srvHandle; // For reading in shaders
+    BindlessHandle uavHandle; // For RWTexture access
+
+    uint32_t GetBindlessIndex() const override {
+        // Prefer SRV, fall back to UAV
+        if (srvHandle.IsValid()) return srvHandle.index;
+        if (uavHandle.IsValid()) return uavHandle.index;
+        return INVALID_DESCRIPTOR_INDEX;
+    }
+
+    uint32_t GetBindlessUAVIndex() const {
+        return uavHandle.IsValid() ? uavHandle.index : INVALID_DESCRIPTOR_INDEX;
+    }
 };
 
 

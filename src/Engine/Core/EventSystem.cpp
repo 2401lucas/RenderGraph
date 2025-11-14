@@ -1,4 +1,7 @@
-// Engine/Core/EventSystem.cpp
+//
+// Created by 2401Lucas on 2025-10-30.
+//
+
 #include "EventSystem.h"
 #include <algorithm>
 #include <stdexcept>
@@ -68,7 +71,7 @@ void EventSystem::Emit(const std::string &eventType, const EventData &data) {
     }
 
     // Call all listeners for this event
-    // Note: We copy the listener list in case a callback modifies the subscription list
+    // Swap with an empty vector to avoid issues if callbacks modify the subscription list
     auto listenersCopy = it->second;
     for (const auto &listener: listenersCopy) {
         if (listener.callback) {
@@ -85,8 +88,7 @@ void EventSystem::EmitQueued(const std::string &eventType, const EventData &data
 }
 
 void EventSystem::ProcessQueued() {
-    // Process all queued events
-    // We swap with an empty vector to avoid issues if callbacks queue more events
+    // Swap with an empty vector to avoid issues if callbacks queue more events
     std::vector<QueuedEvent> eventsToProcess;
     eventsToProcess.swap(m_queuedEvents);
 

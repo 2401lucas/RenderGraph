@@ -21,6 +21,7 @@ Mesh::Mesh(Device *device, const MeshData &data)
     size_t vertexBufferSize = data.vertices.size() * sizeof(Vertex);
     m_vertexBuffer = m_device->CreateBuffer({
         .size = vertexBufferSize,
+        .stride = sizeof(Vertex),
         .usage = BufferUsage::Vertex,
         .memoryType = MemoryType::GPU
     });
@@ -33,6 +34,7 @@ Mesh::Mesh(Device *device, const MeshData &data)
         size_t indexBufferSize = data.indices.size() * sizeof(uint32_t);
         m_indexBuffer = m_device->CreateBuffer({
             .size = indexBufferSize,
+            .stride = sizeof(uint32_t),
             .usage = BufferUsage::Index,
             .memoryType = MemoryType::GPU
         });

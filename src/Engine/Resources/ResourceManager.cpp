@@ -16,7 +16,7 @@ ResourceManager::ResourceManager(Device *device, EventSystem *eventSystem) : m_d
         .width = textureData.width,
         .height = textureData.height,
         .depth = textureData.depth,
-        .mipLevels = textureData.mipLevels,
+        .mipLevels = static_cast<uint16_t>(textureData.mipLevels),
         .arraySize = 1,
         .format = textureData.format,
         .usage = TextureUsage::ShaderResource
@@ -24,7 +24,7 @@ ResourceManager::ResourceManager(Device *device, EventSystem *eventSystem) : m_d
     std::unique_ptr<Texture> texture(device->CreateTexture(textureCI));
     device->UploadTextureData(texture.get(), textureData.data.data(),
                               textureData.data.size() * sizeof(uint8_t));
-    m_texturePool.Add("default", std::move(texture));
+    m_defaultTextureHandle = m_texturePool.Add("default", std::move(texture));
 }
 
 ResourceManager::~ResourceManager() {
@@ -84,7 +84,7 @@ TextureHandle ResourceManager::LoadTexture(const std::string &path) {
             .width = textureData.width,
             .height = textureData.height,
             .depth = textureData.depth,
-            .mipLevels = textureData.mipLevels,
+            .mipLevels = static_cast<uint16_t>(textureData.mipLevels),
             .arraySize = 1,
             .format = textureData.format,
             .usage = TextureUsage::ShaderResource
@@ -100,7 +100,7 @@ TextureHandle ResourceManager::LoadTexture(const std::string &path) {
         printf(" - ");
         printf(e.what());
         printf("\n");
-        return TextureHandle{};
+        return m_defaultTextureHandle;
     }
 }
 
@@ -113,8 +113,6 @@ MaterialHandle ResourceManager::LoadMaterial(const std::string &path) {
     }
 
     std::unique_ptr<Material> material = std::make_unique<Material>();
-    // TODO: Material System
-    // material->SetShader("UberShader.shader");
     material->SetAlbedoTexture(LoadTexture(path));
     MaterialHandle handle = m_materialPool.Add(path, std::move(material));
     return handle;
